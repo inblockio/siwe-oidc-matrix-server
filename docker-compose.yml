@@ -1,0 +1,44 @@
+services:
+  matrix_synapse:
+    image: matrixdotorg/synapse:latest
+    ports:
+      - 8080:8080
+    #    restart: always
+    environment:
+      SYNAPSE_SERVER_NAME: ${MATRIX_SERVER_NAME}
+      SYNAPSE_REPORT_STATS: ${MATRIX_REPORT_STATS}
+      SYNAPSE_HTTP_PORT: ${MATRIX_PORT}
+      AUTHLIB_INSECURE_TRANSPORT: ${USE_BUILDIN_SIWEOIDC}
+    env_file:
+      - .env
+    depends_on:
+      - siwe-oidc
+    entrypoint: /entrypoint.d/matrix_server.sh
+    volumes:
+      - ./entrypoints/matrix_server.sh:/entrypoint.d/matrix_server.sh:ro
+      #      REMOVE
+      - ./mount_point:/data
+
+  redis:
+    image: redis
+    healthcheck:
+      test: [ "CMD", "redis-cli","ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  siwe-oidc:
+    image: ghcr.io/spruceid/siwe_oidc:20221208081605782143
+    depends_on:
+      - redis
+    ports:
+      - ${SIWEOIDC_PORT}:${SIWEOIDC_PORT}
+    environment:
+      SIWEOIDC_REDIS_URL: "redis://redis"
+      SIWEOIDC_ADDRESS: ${SIWEOIDC_ADDRESS}
+      SIWEOIDC_HOST: ${SIWEOIDC_HOST}
+      SIWEOIDC_PORT: ${SIWEOIDC_PORT}
+      SIWEOIDC_DEFAULT_CLIENTS: ${SIWEOIDC_DEFAULT_CLIENTS}
+      SIWEOIDC_BASE_URL: ${SIWEOIDC_BASE_URL}
+      RUST_LOG: ${RUST_LOG}
