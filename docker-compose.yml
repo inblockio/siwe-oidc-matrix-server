@@ -1,6 +1,8 @@
 services:
   matrix_synapse:
-    image: matrixdotorg/synapse:latest
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile
     ports:
       - 8080:8080
     #    restart: always
@@ -16,10 +18,8 @@ services:
     depends_on:
       - siwe-oidc
       - proxy
-    entrypoint: /entrypoint.d/matrix_server.sh
     volumes:
-      - ./entrypoints/matrix_server.sh:/entrypoint.d/matrix_server.sh:ro
-      - ./mount_point:/data
+      - matrix_data:/data
 
   redis:
     image: redis
@@ -61,10 +61,10 @@ services:
       - 80:80
       - 443:443
     volumes:
-      - ./proxy/conf.d:/etc/nginx/conf.d:rw
-      - ./proxy/vhost.d:/etc/nginx/vhost.d:rw
-      - ./proxy/html:/usr/share/nginx/html:rw
-      - ./proxy/certs:/etc/nginx/certs:ro
+      - proxy_data_conf_d:/etc/nginx/conf.d:rw
+      - proxy_data_vhost_d:/etc/nginx/vhost.d:rw
+      - proxy_data_html:/usr/share/nginx/html:rw
+      - proxy_data_certs:/etc/nginx/certs:ro
       - /var/run/docker.sock:/tmp/docker.sock:ro
       #- "./max_upload_size.conf:/etc/nginx/conf.d/max_upload_size.conf"
     restart: unless-stopped
@@ -75,10 +75,19 @@ services:
     depends_on:
       - proxy
     volumes:
-      - ./proxy/acme:/etc/acme.sh
-      - ./proxy/conf.d:/etc/nginx/conf.d:rw
-      - ./proxy/vhost.d:/etc/nginx/vhost.d:rw
-      - ./proxy/html:/usr/share/nginx/html:rw
-      - ./proxy/certs:/etc/nginx/certs:rw
+      - proxy_data_acme:/etc/acme.sh
+      - proxy_data_conf_d:/etc/nginx/conf.d:rw
+      - proxy_data_vhost_d:/etc/nginx/vhost.d:rw
+      - proxy_data_html:/usr/share/nginx/html:rw
+      - proxy_data_certs:/etc/nginx/certs:rw
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
+
+
+volumes:
+  matrix_data:
+  proxy_data_acme:
+  proxy_data_conf_d:
+  proxy_data_vhost_d:
+  proxy_data_html:
+  proxy_data_certs:
