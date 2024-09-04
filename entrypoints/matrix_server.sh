@@ -1,5 +1,11 @@
 #!/bin/bash
 
+if [ "$MATRIX_USE_BUILDIN_SIWEOIDC" == "true" ]
+then
+export AUTHLIB_INSECURE_TRANSPORT=true
+fi
+
+
 if [ ! -f /data/homeserver.yaml ]; then
 
 /start.py generate
@@ -26,8 +32,6 @@ then
   yq -i -y ".oidc_providers[0].token_endpoint = \"http://siwe-oidc:${SIWEOIDC_PORT}/token\"" /data/homeserver.yaml
   yq -i -y ".oidc_providers[0].userinfo_endpoint = \"http://siwe-oidc:${SIWEOIDC_PORT}/userinfo\"" /data/homeserver.yaml
   yq -i -y ".oidc_providers[0].jwks_uri = \"http://siwe-oidc:${SIWEOIDC_PORT}/jwk\"" /data/homeserver.yaml
-  export AUTHLIB_INSECURE_TRANSPORT=true
-
 else
   yq -i -y ".oidc_providers[0].issuer = \"${SIWEOIDC_BASE_URL}\"" /data/homeserver.yaml
 fi
