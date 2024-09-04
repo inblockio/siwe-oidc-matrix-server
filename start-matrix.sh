@@ -7,12 +7,15 @@ SIWEOIDC_ADDRESS=0.0.0.0
 SIWEOIDC_DEFAULT_CLIENTS=
 USE_BUILDIN_SIWEOIDC=false
 RUST_LOG="siwe_oidc=error,tower_http=error"
+#TODO remove
 SIWEOIDC_BASE_URL="http://$SIWEOIDC_HOST:$SIWEOIDC_PORT"
 MATRIX_SERVER_NAME=localhost
 MATRIX_HOST=localhost
 MATRIX_PORT=8080
 MATRIX_BASE_URL="http://$MATRIX_HOST:$MATRIX_PORT"
 MATRIX_REPORT_STATS=no
+MATRIX_MESSAGE_LIFETIME=4w
+ATTACH=false
 
 
 
@@ -81,11 +84,21 @@ while [ "$#" -gt 0 ]; do
                 shift
                 shift
                 ;;
+            --MATRIX_MESSAGE_LIFETIME)
+                MATRIX_MESSAGE_LIFETIME="$2"
+                shift
+                shift
+                ;;
+            --attach)
+                ATTACH=true
+                shift
+                ;;
             --MATRIX_REPORT_STATS)
                 MATRIX_REPORT_STATS=yes
                 shift
                 ;;
                 *)
+                  echo "unknown arg ${1}"
                 exit 0
                 ;;
         esac
@@ -93,11 +106,14 @@ while [ "$#" -gt 0 ]; do
 
 if test -z "$SIWEOIDC_DEFAULT_CLIENTS"
 then
-SIWEOIDC_DEFAULT_CLIENTS="'{$SIWEOIDC_CLIENT_ID=\"{\\\"secret\\\":\\\"$SIWEOIDC_SECRET_ID\\\", \\\"metadata\\\": {\\\"redirect_uris\\\": [\\\"http://localhost:8080/_synapse/client/oidc/callback\\\"]}}\"}'"
+SIWEOIDC_DEFAULT_CLIENTS="'{$SIWEOIDC_CLIENT_ID=\"{\\\"secret\\\":\\\"$SIWEOIDC_SECRET_ID\\\", \\\"metadata\\\": {\\\"redirect_uris\\\": [\\\"$MATRIX_BASE_URL/_synapse/client/oidc/callback\\\"]}}\"}'"
 fi
 
 if [ ! -f ./.env ]; then
     touch .env
+else
+  rm .env
+  touch .env
 fi
 
 echo "#SIWEOIDC-CONFIG" >> .env
@@ -119,14 +135,22 @@ echo "MATRIX_HOST=$MATRIX_HOST" >> .env
 echo "MATRIX_PORT=$MATRIX_PORT" >> .env
 echo "MATRIX_BASE_URL=$MATRIX_BASE_URL" >> .env
 echo "MATRIX_REPORT_STATS=$MATRIX_REPORT_STATS" >> .env
-echo "MATRIX_DISABLE_SSL_OIDC=$USE_BUILDIN_SIWEOIDC" >> .env
 echo "MATRIX_SERVER_NAME=$MATRIX_SERVER_NAME" >> .env
+echo "MATRIX_MESSAGE_LIFETIME=$MATRIX_MESSAGE_LIFETIME" >> .env
 
 
 
-if [ "$USE_BUILDIN_SIWEOIDC" = true ]
+if [ "$USE_BUILDIN_SIWEOIDC" = "true" ]
 then
-  docker-compose up
+  if [ "$ATTACH" == "true" ]; then
+    docker-compose up matrix_synapse redis siwe-oidc
+  else
+    docker-compose up matrix_synapse redis siwe-oidc -d
+  fi
 else
-  docker-compose up matrix_synapse
+  if [ "$ATTACH" == "true" ]; then
+      docker-compose up
+  else
+    docker-compose up -d
+  fi
 fi

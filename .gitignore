@@ -3,3 +3,4 @@
 /homeserver.yaml
 /.idea/
 /siwe-oidc-matrix-server.iml
+/proxy/
