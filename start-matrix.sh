@@ -58,6 +58,7 @@ while [ "$#" -gt 0 ]; do
                 ;;
             --ENABLE_DEBUG)
                 RUST_LOG="siwe_oidc=debug,tower_http=trace"
+                ATTACH=true
                 shift
                 ;;
             --USE_BUILDIN_SIWEOIDC)
@@ -87,10 +88,6 @@ while [ "$#" -gt 0 ]; do
             --MATRIX_MESSAGE_LIFETIME)
                 MATRIX_MESSAGE_LIFETIME="$2"
                 shift
-                shift
-                ;;
-            --attach)
-                ATTACH=true
                 shift
                 ;;
             --MATRIX_REPORT_STATS)
@@ -140,7 +137,7 @@ echo "MATRIX_MESSAGE_LIFETIME=$MATRIX_MESSAGE_LIFETIME" >> .env
 
 
 
-if [ "$USE_BUILDIN_SIWEOIDC" = "true" ]
+if [ "$USE_BUILDIN_SIWEOIDC" == "true" ]
 then
   if [ "$ATTACH" == "true" ]; then
     docker-compose up matrix_synapse redis siwe-oidc
