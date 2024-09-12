@@ -1,3 +1,4 @@
 FROM matrixdotorg/synapse:latest
-COPY ./entrypoints/matrix_server.sh /entrypoint.d/matrix_server.sh
-CMD ["/entrypoint.d/matrix_server.sh"]
+RUN apt update && apt install wget -y && wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq && chmod +x /usr/bin/yq
+COPY ./entrypoints/matrix_server.sh /matrix_server
+ENTRYPOINT ["/matrix_server.sh"]

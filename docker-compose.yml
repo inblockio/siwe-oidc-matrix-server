@@ -3,8 +3,6 @@ services:
     build:
       context: .
       dockerfile: dockerfiles/Dockerfile
-    ports:
-      - 8080:8080
     #    restart: always
     environment:
       SYNAPSE_SERVER_NAME: ${MATRIX_SERVER_NAME}
@@ -12,14 +10,16 @@ services:
       VIRTUAL_HOST: ${MATRIX_HOST}
       VIRTUAL_PORT: ${MATRIX_PORT}
       LETSENCRYPT_HOST: ${MATRIX_HOST}
-      LETSENCRYPT_EMAIL: zusel7.zusel7@gmail.com
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
     env_file:
       - .env
     depends_on:
       - siwe-oidc
       - proxy
     volumes:
-      - matrix_data:/data
+      #      - matrix_data:/data
+      - ./mount_point:/data
+      - ./entrypoints/matrix_server.sh:/matrix_server.sh
 
   redis:
     image: redis
@@ -47,7 +47,7 @@ services:
       VIRTUAL_HOST: ${SIWEOIDC_HOST}
       VIRTUAL_PORT: ${SIWEOIDC_PORT}
       LETSENCRYPT_HOST: ${SIWEOIDC_HOST}
-      LETSENCRYPT_EMAIL: zusel7.zusel7@gmail.com
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
 
   proxy:
     image: nginxproxy/nginx-proxy:alpine
