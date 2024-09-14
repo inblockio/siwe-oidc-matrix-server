@@ -28,6 +28,7 @@ echo "General"
 echo "--ENABLE_DEBUG \"enable debug-mode (disable detach and set siweoidc debug-level)\""
 echo "--LETSENCRYPT_EMAIL (required) \"set letsencrypt-email\""
 echo "--reset \"resets/delete all data\""
+echo "--stop \"stop all containers\""
 
 echo ""
 echo ""
@@ -154,6 +155,10 @@ while [ "$#" -gt 0 ]; do
               ;;
             --reset)
               resetAllData
+              exit 1
+              ;;
+            --stop)
+              stopContainers
               exit 1
               ;;
             --SIWEOIDC_CLIENT_ID)
