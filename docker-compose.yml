@@ -1,5 +1,6 @@
 services:
   matrix_synapse:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: dockerfiles/Dockerfile

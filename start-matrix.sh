@@ -27,6 +27,7 @@ echo "#################################################################"
 echo "General"
 echo "--ENABLE_DEBUG \"enable debug-mode (disable detach and set siweoidc debug-level)\""
 echo "--LETSENCRYPT_EMAIL (required) \"set letsencrypt-email\""
+echo "--reset \"resets/delete all data\""
 
 echo ""
 echo ""
@@ -52,6 +53,24 @@ echo ""
 echo "#################################################################"
 }
 
+function stopContainers() {
+    docker-compose down
+}
+
+
+function resetAllData() {
+    read -r -p $'Destroying containers and deleting all data \n\tAre you sure? [y/N] ' response
+    case "$response" in
+                    [yY][eE][sS]|[yY])
+                        docker-compose down -v
+                        rm .env
+                        ;;
+                    *)
+                        echo "Aborting..."
+                        exit 0
+                        ;;
+                esac
+}
 
 function echoEroor() {
     text=$1
@@ -131,6 +150,10 @@ while [ "$#" -gt 0 ]; do
         case "$1" in
             --help)
               printHelp
+              exit 1
+              ;;
+            --reset)
+              resetAllData
               exit 1
               ;;
             --SIWEOIDC_CLIENT_ID)

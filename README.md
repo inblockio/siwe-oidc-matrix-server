@@ -10,8 +10,11 @@
 #### --ENABLE_DEBUG
 This parameter enables Debug mode for detailed logging and troubleshooting. When activated, it ignores the --detach option in Docker-Compose, keeping the process in the foreground to allow real-time log output. It also sets the log level of the SIWEOIDC service to debug, providing more granular logs for debugging purposes.
 
-##### --LETSENCRYPT_EMAIL **Required**
+#### --LETSENCRYPT_EMAIL **Required**
 This parameter specifies the email address associated with the Let's Encrypt certificate. The email address will be used for important notifications, such as certificate expiry warnings or security updates. It is strongly recommended to provide a valid and monitored email address to ensure you receive these alerts.
+
+#### --reset
+<span style="color:red">BE CAREFULL!!! THIS WILL DELETE ALL YOUR DATA!!!</span> <br>
 
 
 ### SIWEOIDC-Config
