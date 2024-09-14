@@ -1,11 +1,5 @@
 #!/bin/bash
 
-if [ "$MATRIX_USE_BUILDIN_SIWEOIDC" == "true" ]
-then
-export AUTHLIB_INSECURE_TRANSPORT=true
-fi
-
-
 mkdir /data/certs
 cp /certs/${MATRIX_HOST}/* /data/certs/
 chown -R 991:991 /data/certs
@@ -43,14 +37,8 @@ yq -i ".oidc_providers[0].idp_brand = \"siwe-oidc\"" /data/homeserver.yaml
 yq -i ".retention.enabled=true" /data/homeserver.yaml
 yq -i ".retention.default_policy.allowed_lifetime_max= \"${MATRIX_MESSAGE_LIFETIME}\"" /data/homeserver.yaml
 
-if [ "$MATRIX_USE_BUILDIN_SIWEOIDC" == "true" ]
-then
-  yq -i ".oidc_providers[0].issuer = \"http://siwe-oidc:${SIWEOIDC_PORT}\"" /data/homeserver.yaml
-  yq -i ".oidc_providers[0].token_endpoint = \"http://siwe-oidc:${SIWEOIDC_PORT}/token\"" /data/homeserver.yaml
-  yq -i ".oidc_providers[0].jwks_uri = \"http://siwe-oidc:${SIWEOIDC_PORT}/jwk\"" /data/homeserver.yaml
-else
-  yq -i ".oidc_providers[0].issuer = \"${SIWEOIDC_BASE_URL}\"" /data/homeserver.yaml
-fi
+yq -i ".oidc_providers[0].issuer = \"${SIWEOIDC_BASE_URL}\"" /data/homeserver.yaml
+
 yq -i ".oidc_providers[0].client_id = \"${MATRIX_OIDC_CLIENT_ID}\"" /data/homeserver.yaml
 yq -i ".oidc_providers[0].client_secret = \"${MATRIX_OIDC_SECRET_ID}\"" /data/homeserver.yaml
 

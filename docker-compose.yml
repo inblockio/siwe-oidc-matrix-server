@@ -6,7 +6,7 @@ services:
     ports:
       - "8448:8448"
     environment:
-      SYNAPSE_SERVER_NAME: ${MATRIX_SERVER_NAME}
+      SYNAPSE_SERVER_NAME: ${MATRIX_HOST}
       SYNAPSE_REPORT_STATS: ${MATRIX_REPORT_STATS}
       VIRTUAL_HOST: ${MATRIX_HOST}
       VIRTUAL_PORT: ${MATRIX_PORT}
@@ -20,9 +20,8 @@ services:
       - letsencrypt
     volumes:
       #      - matrix_data:/data
-      - ./mount_point:/data
+      - matrix_data:/data
       - proxy_data_certs:/certs:rw
-      - ./entrypoints/matrix_server.sh:/matrix_server.sh
 
   redis:
     image: redis
@@ -41,7 +40,7 @@ services:
       - ${SIWEOIDC_PORT}:${SIWEOIDC_PORT}
     environment:
       SIWEOIDC_REDIS_URL: "redis://redis"
-      SIWEOIDC_ADDRESS: ${SIWEOIDC_ADDRESS}
+      SIWEOIDC_ADDRESS: 0.0.0.0
       SIWEOIDC_HOST: ${SIWEOIDC_HOST}
       SIWEOIDC_PORT: ${SIWEOIDC_PORT}
       SIWEOIDC_DEFAULT_CLIENTS: ${SIWEOIDC_DEFAULT_CLIENTS}
