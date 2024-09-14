@@ -3,7 +3,8 @@ services:
     build:
       context: .
       dockerfile: dockerfiles/Dockerfile
-    #    restart: always
+    ports:
+      - "8448:8448"
     environment:
       SYNAPSE_SERVER_NAME: ${MATRIX_SERVER_NAME}
       SYNAPSE_REPORT_STATS: ${MATRIX_REPORT_STATS}
@@ -16,9 +17,11 @@ services:
     depends_on:
       - siwe-oidc
       - proxy
+      - letsencrypt
     volumes:
       #      - matrix_data:/data
       - ./mount_point:/data
+      - proxy_data_certs:/certs:rw
       - ./entrypoints/matrix_server.sh:/matrix_server.sh
 
   redis:

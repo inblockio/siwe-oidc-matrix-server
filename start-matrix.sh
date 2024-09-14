@@ -173,10 +173,6 @@ while [ "$#" -gt 0 ]; do
         esac
     done
 
-if [[ (! -z "${SIWEOIDC_HOST}" || ! -z "${SIWEOIDC_CLIENT}") ]]; then
-  USE_BUILDIN_SIWEOIDC=true
-fi
-
 checkRequiredArguments
 checkAutoCompletion
 fillMissing

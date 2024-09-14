@@ -6,16 +6,33 @@ export AUTHLIB_INSECURE_TRANSPORT=true
 fi
 
 
+mkdir /data/certs
+cp /certs/${MATRIX_HOST}/* /data/certs/
+chown -R 991:991 /data/certs
+
 if [ ! -f /data/homeserver.yaml ]; then
 
 /start.py generate
 
+
 #general
-yq -i --unwrapScalar=false ".server_name =\"${MATRIX_HOST}\")" /data/homeserver.yaml
-yq -i ".listeners[0].port = ${MATRIX_PORT}" /data/homeserver.yaml
+yq -i --unwrapScalar=false ".server_name =\"${MATRIX_HOST}\"" /data/homeserver.yaml
 yq -i ".public_baseurl = \"${MATRIX_BASE_URL}\"" /data/homeserver.yaml
 
 
+#port configuration
+yq -i ".listeners[0].port = ${MATRIX_PORT}" /data/homeserver.yaml
+yq -i ".listeners[0].resources[0].names = [\"client\" ]" /data/homeserver.yaml
+yq -i ".listeners[1].port = 8448" /data/homeserver.yaml
+yq -i ".listeners[1].tls = true" /data/homeserver.yaml
+yq -i ".listeners[1].type = \"http\"" /data/homeserver.yaml
+yq -i ".listeners[1].x_forwarded = true" /data/homeserver.yaml
+yq -i ".listeners[1].resources[0].names = [\"federation\" ]" /data/homeserver.yaml
+yq -i ".listeners[1].resources[0].compress = false" /data/homeserver.yaml
+
+#tls config
+yq -i --unwrapScalar=false ".tls_certificate_path = \"/data/certs/fullchain.pem\"" /data/homeserver.yaml
+yq -i --unwrapScalar=false ".tls_private_key_path = \"/data/certs/key.pem\"" /data/homeserver.yaml
 
 #oidc-config
 yq -i ".oidc_providers[0].idp_id = \"siwe-oidc\"" /data/homeserver.yaml
@@ -30,7 +47,6 @@ if [ "$MATRIX_USE_BUILDIN_SIWEOIDC" == "true" ]
 then
   yq -i ".oidc_providers[0].issuer = \"http://siwe-oidc:${SIWEOIDC_PORT}\"" /data/homeserver.yaml
   yq -i ".oidc_providers[0].token_endpoint = \"http://siwe-oidc:${SIWEOIDC_PORT}/token\"" /data/homeserver.yaml
-  yq -i ".oidc_providers[0].userinfo_endpoint = \"http://siwe-oidc:${SIWEOIDC_PORT}/userinfo\"" /data/homeserver.yaml
   yq -i ".oidc_providers[0].jwks_uri = \"http://siwe-oidc:${SIWEOIDC_PORT}/jwk\"" /data/homeserver.yaml
 else
   yq -i ".oidc_providers[0].issuer = \"${SIWEOIDC_BASE_URL}\"" /data/homeserver.yaml
@@ -38,12 +54,12 @@ fi
 yq -i ".oidc_providers[0].client_id = \"${MATRIX_OIDC_CLIENT_ID}\"" /data/homeserver.yaml
 yq -i ".oidc_providers[0].client_secret = \"${MATRIX_OIDC_SECRET_ID}\"" /data/homeserver.yaml
 
-yq -i ".oidc_providers[0].client_auth_method = \"client_secret_post\"" /data/homeserver.yaml
-yq -i ".oidc_providers[0].user_profile_method = \"userinfo_endpoint\"" /data/homeserver.yaml
+yq -i --unwrapScalar=false ".oidc_providers[0].user_mapping_provider.config.localpart_template=\"{{ user.preferred_username }}\"" /data/homeserver.yaml
+yq -i --unwrapScalar=false ".oidc_providers[0].user_mapping_provider.config.display_name_template=\"{{ user.name }}\"" /data/homeserver.yaml
 
 
 else
-  echo "Setup already complete! Skipping Setup"
+  echo "Setup already completed! Skipping Setup"
 fi
 
 /start.py
