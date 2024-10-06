@@ -5,6 +5,7 @@
 1. [Parameters](#parameters)
 2. [Examples](#examples)
 3. [Issues/integrations](#issuesintegrations)
+4. [Mobile Wallet Usage](#mobile-wallet-usage)
 
 ## Parameters
 
@@ -115,3 +116,7 @@ monitoring and analysis purposes.
 ## Issues/Integrations
 ### App-Element-Android:
 https://github.com/element-hq/element-meta/discussions/2556
+
+## Mobile Wallet Usage
+### What works well with mobile is to use this (https://app.cinny.in/) matrix web-client in combination with [Phatom Wallet](https://phantom.app/) tested on iOS.
+
