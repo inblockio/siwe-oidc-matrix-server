@@ -4,6 +4,7 @@
 
 1. [Parameters](#parameters)
 2. [Examples](#examples)
+3. [Issues/integrations](#issuesintegrations)
 
 ## Parameters
 
@@ -110,3 +111,7 @@ monitoring and analysis purposes.
 ````
 ./start-matrix.sh --reset
 ````
+
+## Issues/Integrations
+### App-Element-Android:
+https://github.com/element-hq/element-meta/discussions/2556
