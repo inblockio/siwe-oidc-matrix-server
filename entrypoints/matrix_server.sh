@@ -206,6 +206,40 @@ apply_mas_config() {
   yq -i ".matrix_authentication_service.secret = \"${MAS_SHARED_SECRET}\"" /data/homeserver.yaml
 }
 
+apply_did_field_protection() {
+  # Make the provider-asserted DID profile field immutable to the user.
+  #
+  # siwx-oidc publishes each user's DID into their MSC4133 profile under
+  # `io.inblock.did`, signed with the provider's ES256 key. On stock Synapse
+  # that field is freely user-writable with no value validation
+  # (handlers/profile.py:700-704 checks ownership and nothing else), so any user
+  # could overwrite their own copy with SOMEONE ELSE'S DID and misrepresent
+  # their cryptographic identity to every client and every federating server
+  # that reads it. The signature makes that detectable; this denylist makes it
+  # impossible.
+  #
+  # Requires the vendored patch dockerfiles/Dockerfile applies —
+  # patches/synapse/msc4133-profile-field-write-policy.patch, a backport of
+  # element-hq/synapse#19980. On an UNPATCHED Synapse this key is simply an
+  # unknown experimental_features entry and is ignored, so writing it here is
+  # safe either way; it does not gate startup.
+  #
+  # DENYLIST, never msc4133_key_allowlist: the allowlist is a hard whitelist
+  # over EVERY custom profile field on the homeserver, which would forbid every
+  # other field our users might ever set. Upstream's key name is used verbatim
+  # so that adopting the merged PR is a no-op for this config.
+  #
+  # `yq` is given the field name as a strenv() so the dots in "io.inblock.did"
+  # are never parsed as a yq path expression.
+  # The field name is a WIRE CONTRACT shared with siwx-oidc (its own
+  # `did_assertion::DID_PROFILE_FIELD`) and with the siwx-oidc-auth verifier.
+  # Overridable for a deployment that renames it, but both sides must agree —
+  # changing it on one side alone silently unprotects the live field.
+  SIWX_DID_PROFILE_FIELD="${SIWX_DID_PROFILE_FIELD:-io.inblock.did}" \
+    yq -i '.experimental_features.msc4133_key_denylist = [strenv(SIWX_DID_PROFILE_FIELD)]' \
+      /data/homeserver.yaml
+}
+
 apply_matrixrtc_config() {
   # Enable QR code login rendezvous server (MSC4108 2024 version)
   yq -i ".experimental_features.msc4108_enabled = true" /data/homeserver.yaml
@@ -235,6 +269,7 @@ apply_matrixrtc_config() {
 if [ -f /data/homeserver.yaml ]; then
   apply_mas_config
   apply_matrixrtc_config
+  apply_did_field_protection
 else
   # /start.py generate above should have created this; if it somehow didn't,
   # the final /start.py below will fail loudly on its own missing config.

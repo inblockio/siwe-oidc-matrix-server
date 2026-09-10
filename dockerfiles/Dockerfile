@@ -17,7 +17,7 @@ FROM matrixdotorg/synapse:v1.159.0
 # `matrixdotorg/synapse` base (the base image's own apt sources rotate), so
 # this only removes the non-determinism we CAN control (the yq download
 # below, and unpinned recommends bloat).
-RUN apt-get update && apt-get install -y --no-install-recommends wget && apt-get clean
+RUN apt-get update && apt-get install -y --no-install-recommends wget patch && apt-get clean
 # Pinned to yq v4.53.3 (resolved from the /releases/latest redirect at the
 # time this was written) with a SHA-256 check against the binary — was
 # `.../releases/latest/download/...`, which re-resolves to whatever is
@@ -27,6 +27,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget && apt-get
 RUN wget https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64 -O /usr/bin/yq \
     && echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /usr/bin/yq" | sha256sum -c - \
     && chmod +x /usr/bin/yq
+# ---------------------------------------------------------------------------
+# Vendored Synapse patches. patches/synapse/README.md is the registry: no patch
+# ships without an entry there stating why, the evidence, and its retirement
+# condition.
+#
+# `patch`, not `git apply`: this base image ships neither `git` nor `patch`
+# (hence the apt line above), and the installed tree under site-packages is not
+# a git repository.
+#
+# The synapse package directory is resolved at build time rather than
+# hard-coded as python3.13 — a base image that bumps its Python would otherwise
+# leave the patch silently unapplied. --fuzz=0 so a hunk that only *nearly*
+# matches fails instead of landing somewhere plausible, and the whole RUN fails
+# the build loudly if the patch no longer applies. That is the point: see rule 6
+# in the registry for why we do not COPY pre-patched files instead.
+COPY ./patches/synapse/msc4133-profile-field-write-policy.patch /tmp/synapse-msc4133-acl.patch
+RUN SYNAPSE_PKG="$(python -c 'import synapse, os; print(os.path.dirname(synapse.__file__))')" \
+    && patch -p1 --forward --batch --fuzz=0 --verbose \
+         -d "$(dirname "$SYNAPSE_PKG")" < /tmp/synapse-msc4133-acl.patch \
+    && python -c 'import synapse.handlers.profile, synapse.config.experimental' \
+    && rm -f /tmp/synapse-msc4133-acl.patch
+
 COPY ./entrypoints/matrix_server.sh /matrix_server.sh
 ENTRYPOINT ["/matrix_server.sh"]
 
