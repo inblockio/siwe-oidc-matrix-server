@@ -185,6 +185,11 @@ FULL_CHECKS=(
   "siwx-oidc.session_teardown|siwx-oidc|oidc|e2e_session_teardown"
   # ---- siwx-oidc msc4191 metadata (expected-green since the 1.159 upgrade) ----
   "siwx-oidc.msc3861.msc4191_metadata_advertised_and_forwarded|siwx-oidc|oidc|e2e_msc3861|msc4191_metadata_advertised_and_forwarded"
+  # ---- attested DID profile field (needs the msc4133 write-ACL patch in the
+  #      Synapse image; see ../patches/synapse/README.md) ----
+  "siwx-oidc.did_field.published_verifiable_and_public|siwx-oidc|oidc|e2e_did_field_live|did_field_is_published_verifiable_and_public_live"
+  "siwx-oidc.did_field.user_write_is_forbidden|siwx-oidc|oidc|e2e_did_field_live|did_field_user_write_is_forbidden_live"
+  "siwx-oidc.did_field.clobber_is_restored_at_next_signin|siwx-oidc|oidc|e2e_did_field_live|clobbered_did_field_is_restored_at_next_signin_live"
 )
 
 # -----------------------------------------------------------------------------

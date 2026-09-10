@@ -37,6 +37,21 @@ shift || true   # remaining args (if any) are specific test fns / filters
 SIWEOIDC_HOST="${SIWEOIDC_HOST:-http://localhost:18081}"
 MATRIX_HOST="${MATRIX_HOST:-http://localhost:18080}"
 
+# Some live tests must observe or seed SYNAPSE-side state, which needs a
+# short-TTL admin token, which needs the MAS shared secret. Example:
+# `e2e_did_field_live`'s self-heal leg mints one to plant a value the way a
+# pre-denylist write would have, then proves the next sign-in restores it.
+#
+# The secret is not in the adapter's environment, so fall back to the harness
+# env file — the same file up.sh reads to inject it into the containers. Never
+# echoed: it is passed straight into the test process. Tests that do not need it
+# are unaffected, and tests that do skip CLEANLY when it is absent rather than
+# quietly degrading into a status-code-only check.
+ENV_FILE="${ENV_FILE:-$(cd "$SCRIPT_DIR/../.." && pwd)/.env.e2e}"
+if [ -z "${MAS_SHARED_SECRET:-}" ] && [ -f "$ENV_FILE" ]; then
+  MAS_SHARED_SECRET="$(sed -n 's/^MAS_SHARED_SECRET=//p' "$ENV_FILE" | head -1)"
+fi
+
 # Sets $SIWX_OIDC_DIR_RESOLVED, or exits 2 having written the reason to $ARTIFACT.
 resolve_siwx_oidc_dir "$ARTIFACT" "$TARGET"
 OIDC_DIR="$SIWX_OIDC_DIR_RESOLVED"
@@ -68,6 +83,7 @@ set +e
 ( cd "$OIDC_DIR" && \
   SIWEOIDC_HOST="$SIWEOIDC_HOST" \
   MATRIX_HOST="$MATRIX_HOST" \
+  MAS_SHARED_SECRET="${MAS_SHARED_SECRET:-}" \
   cargo test --test "$TARGET" -- --ignored --test-threads=1 --nocapture "$@" \
 ) >"$CARGO_OUT" 2>&1
 RC=$?
