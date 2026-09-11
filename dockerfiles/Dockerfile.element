@@ -71,11 +71,14 @@ RUN git apply --verbose /tmp/ew-checkcode.patch
 COPY patches/element-web/browser-eventindex.patch /tmp/ew-eventindex.patch
 RUN git apply --verbose /tmp/ew-eventindex.patch
 
-# Show the provider-attested DID (io.inblock.did) under the MXID in the member
-# info panel, with Element's own copy affordance. Applied LAST because it also
-# touches en_EN.json and its context was generated against the tree with the six
-# above already applied — reorder this and the i18n hunk stops landing. Same
-# fail-loudly contract: `git apply` without --3way, so a patch that no longer
+# Show the provider-attested DID (io.inblock.did) wherever Element shows an
+# identity: under the MXID in the member info panel, and under the Matrix ID in
+# All settings -> Account, both with Element's own copy affordance. Applied
+# SEVENTH because it also touches en_EN.json and its context was generated
+# against the tree with the six above already applied — move it earlier and the
+# i18n hunk stops landing. (It is no longer last: resolve-did-search follows it
+# and depends on it.) Same fail-loudly contract: `git apply` without --3way, so
+# a patch that no longer
 # applies fails the image build instead of silently dropping the feature.
 COPY patches/element-web/show-attested-did.patch /tmp/ew-attested-did.patch
 RUN git apply --verbose /tmp/ew-attested-did.patch

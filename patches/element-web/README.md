@@ -361,10 +361,22 @@ A tag bump must try every patch in this file's order.
 ### 7. `show-attested-did.patch` — POLICY (permanent, deployment-specific)
 
 - **What:** renders the provider-attested DID (`io.inblock.did`, MSC4133 custom profile
-  field) directly under the MXID in the member-info panel, with Element's own
-  `CopyableText` affordance, a tooltip carrying the full value, and a label that reads
-  `DID` or `DID (unsigned)`. Adds `src/hooks/useAttestedDid.ts`, four lines of JSX in
-  `UserInfoHeaderView.tsx`, one CSS block, two `en_EN.json` strings.
+  field) in the TWO places Element shows an identity: directly under the MXID in the
+  member-info panel, and under the Matrix ID in **All settings → Account** (the user's
+  own profile). Both use Element's own `CopyableText` affordance, carry the full value
+  in a tooltip/title, and label it `DID` or `DID (unsigned)`. Adds
+  `src/hooks/useAttestedDid.ts`, JSX in `UserInfoHeaderView.tsx`, an `AttestedDidBox` in
+  `UserProfileSettings.tsx`, two small CSS blocks, two `en_EN.json` strings.
+- **Why both surfaces:** the member panel answers "who is *that*", the settings page
+  answers "who am *I*" — and the second is the one a user reaches when they want to hand
+  their own identifier to somebody. Shipping only the first meant the only way to read
+  your own DID in Element was to open your own member panel from a room, which most
+  users never do.
+- **`AttestedDidBox` is a twin of upstream's `UsernameBox`, not a refactor of it.**
+  Leaving upstream's component untouched means a tag bump can change it freely without
+  this patch fighting the change, and reusing its class names makes the row inherit the
+  section's spacing and type. The only new CSS is `overflow-wrap` — a DID is roughly
+  three times an MXID's length and has no spaces.
 - **Why we maintain it:** siwx-oidc publishes each user's DID into that field and the
   homeserver refuses a write to it from anyone but the provider (see
   `patches/synapse/README.md`), but **no Element surface reads it**. Verified against
@@ -393,11 +405,15 @@ A tag bump must try every patch in this file's order.
   `io.inblock.did` contract is retired.
 - **Order:** applied LAST in `Dockerfile.element`. Its `en_EN.json` hunk was generated
   against the tree with entries 1-6 already applied; moving it earlier breaks that hunk.
-- **Coverage:** none yet in `e2e/element/` — the panel row is rendered from a profile
-  field, so a leg needs an account with a published DID on the lab stack. **This is the
-  one rule-2 exception in this registry and it should be closed**: add a leg that opens
-  the member panel for a siwx-provisioned user and asserts the DID text matches the
-  field read over the C-S API.
+- **Coverage:** none yet in `e2e/element/` — both rows render from a profile field, so a
+  leg needs an account with a published DID on the lab stack. **This is a rule-2
+  exception and it should be closed**: add a leg that opens the member panel for a
+  siwx-provisioned user, and one that opens All settings → Account, asserting in each
+  case that the DID text matches the field read over the C-S API. Note that there is no
+  unit-test cover to fall back on either: `apps/web/test/unit-tests/**` looks like a test
+  tree but is NOT executed at v1.12.26 — the vitest project includes only
+  `src/**/*.test.{ts,tsx}`, and those files use the older `*-test.tsx` spelling. Do not
+  add a case there expecting it to run.
 
 ### 8. `resolve-did-search.patch` — POLICY (permanent, deployment-specific)
 
