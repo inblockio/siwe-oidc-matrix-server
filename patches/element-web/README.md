@@ -403,7 +403,9 @@ A tag bump must try every patch in this file's order.
 
 - **What:** makes a DID typed into a search box resolve to the Matrix user it belongs
   to, in both surfaces that accept an identifier: Spotlight (via `hooks/useProfileInfo`)
-  and the invite / start-DM dialog (via `InviteDialog.updateSuggestions`). Adds
+  and the invite / start-DM dialog (via `InviteDialog.updateSuggestions`). Accepts a bare
+  `did:key:z6Mk…` (looked for on the searcher's own homeserver) or
+  `did:key:z6Mk…@peer.example.org`, which pins the homeserver to look on. Adds
   `src/utils/didLocalpart.ts` (the derivation + `resolveDidToUserId`) and its unit test,
   and moves the shared `DID_PROFILE_FIELD` constant there from entry 7's hook, which now
   re-exports it.
@@ -426,13 +428,34 @@ A tag bump must try every patch in this file's order.
   drifted mirror yields **no result** — it can cost a false negative, it can never point
   at the wrong person. `didLocalpart.test.ts` additionally pins the same vectors as
   `mxid.rs`'s own tests, so drift fails in CI before it ships.
-- **Deliberate limits:** resolves only users on the caller's own homeserver (the
-  derivation is our provider's, not a remote server's), and only accounts that have
-  published the field — an account that has not signed in since publication started is
-  not findable, and becomes findable by itself with no migration, because siwx-oidc
-  re-asserts the field on every sign-in. Typing a DID and pressing enter in the invite
-  dialog does not convert it to a target (`convertFilter` is synchronous and resolution
-  is not); the resolved suggestion must be clicked.
+- **Why the `@server` suffix, and why `@`:** a DID names a KEY, not a server, so a bare
+  DID is only expressible against one homeserver — the searcher's own. The suffix is the
+  smallest thing that makes a federated lookup sayable at all. `@` is unambiguous as the
+  separator because W3C DID Core's method-specific-id grammar does not admit it, for any
+  method (`did:pkh`'s own colons are therefore safe). The transport needs nothing new:
+  Synapse's `on_profile_query` returns custom profile fields over federation, so our
+  homeserver proxies the read. A 10s bound wraps the whole resolution, because a pinned
+  peer that is slow or down would otherwise stall the search box.
+- **What a pinned-server match proves — read this before trusting one.** What makes
+  `io.inblock.did` trustworthy is that the homeserver hosting it refuses a write to it
+  from its own subject, which is `patches/synapse/`'s write-ACL backport. That holds for
+  our own server by construction and for a peer **exactly when the peer runs this stack**
+  (ruling, Tim, 2026-09-11: a peer that publishes our field is running our provider, and
+  in practice therefore our whole stack). A peer that does not is free to let its users
+  write any DID into their own profile, so a pinned-server result is only as good as that
+  server. This patch reads the field; it does NOT verify the ES256 proof beside it, which
+  is what would make a result self-supporting rather than server-supporting. The verifier
+  already exists (`siwx-oidc-auth`'s `fetch_and_verify_did`) — porting it into the client
+  is the upgrade path if a peer outside the stack ever has to be trusted, and nothing here
+  should be read as already having done it.
+- **Deliberate limits:** only accounts that have published the field are findable — an
+  account that has not signed in since publication started is not findable, and becomes
+  findable by itself with no migration, because siwx-oidc re-asserts the field on every
+  sign-in. The derivation is also our provider's, so a homeserver running this build with
+  a different identity provider will not place its users where this computes. Typing a DID
+  and pressing enter in the invite dialog does not convert it to a target
+  (`convertFilter` is synchronous and resolution is not); the resolved suggestion must be
+  clicked.
 - **One upstream behaviour change beyond the DID path:** Spotlight's profile lookup is
   gated on `filter === Filter.People`, which is right for an MXID but would hide the only
   result a DID has, so the gate is widened by `|| looksLikeDid(trimmedQuery)`. MXIDs keep
@@ -453,11 +476,13 @@ A tag bump must try every patch in this file's order.
 - **Order:** applied AFTER entry 7 and depends on it. It moves `DID_PROFILE_FIELD` out of
   `useAttestedDid.ts` into `utils/didLocalpart.ts` and rewrites that line into a
   re-export, so dropping 7 or swapping the two fails the build.
-- **Coverage:** `didLocalpart.test.ts` ships inside the patch (7 vitest cases: the pinned
-  vectors, the pkh/key case rules, shape, no-DID-leak, the legacy shape, and the
-  `looksLikeDid` boundary). Verified locally against v1.12.26 with all eight patches
-  applied: 35/35 across the new file plus the existing `useProfileInfo` and `InviteDialog`
-  suites. No `e2e/element/` leg yet — like entry 7 it needs a lab account with a published
+- **Coverage:** `didLocalpart.test.ts` ships inside the patch (14 vitest cases: the pinned
+  vectors, the pkh/key case rules, shape, no-DID-leak, the legacy shape, the
+  `looksLikeDid` boundary, and `parseDidQuery` — bare vs pinned, a `did:pkh` whose own id
+  carries colons, a port, malformed/empty servers, and the two-`@` case that must not
+  smuggle a server through). Verified locally against v1.12.26 with all eight patches
+  applied: 42/42 across the new file plus the existing `useProfileInfo` and `InviteDialog`
+  suites, plus a live round trip on dev for the bare, `@own-server` and `@remote` forms. No `e2e/element/` leg yet — like entry 7 it needs a lab account with a published
   DID, and the two legs should be written together.
 
 ## Runtime-stage deltas (not `.patch` files, still upstream deviations)

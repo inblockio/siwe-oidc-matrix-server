@@ -154,10 +154,10 @@ index d0cfd4a..8d33da9 100644
                  });
 diff --git a/apps/web/src/utils/didLocalpart.test.ts b/apps/web/src/utils/didLocalpart.test.ts
 new file mode 100644
-index 0000000..41ae907
+index 0000000..81ccc4b
 --- /dev/null
 +++ b/apps/web/src/utils/didLocalpart.test.ts
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,116 @@
 +/**
 +Copyright 2026 inblock.io
 +
@@ -167,7 +167,7 @@ index 0000000..41ae907
 +
 +import { describe, it, expect } from "vitest";
 +
-+import { canonicaliseDid, legacyLocalpartForDid, localpartForDid, looksLikeDid } from "./didLocalpart";
++import { canonicaliseDid, legacyLocalpartForDid, localpartForDid, looksLikeDid, parseDidQuery } from "./didLocalpart";
 +
 +/**
 + * These are the SAME vectors pinned by siwx-oidc's `src/mxid.rs` tests
@@ -233,13 +233,53 @@ index 0000000..41ae907
 +        expect(looksLikeDid("did:")).toBe(false);
 +        expect(looksLikeDid("DID:key:z6Mk")).toBe(false);
 +    });
++
++    describe("parseDidQuery", () => {
++        it("leaves the server unset for a bare DID, so the caller uses its own", () => {
++            expect(parseDidQuery(KEY_UPPER)).toEqual({ did: KEY_UPPER });
++            expect(parseDidQuery("  " + KEY_UPPER + "  ")).toEqual({ did: KEY_UPPER });
++        });
++
++        it("pins the homeserver given after @", () => {
++            expect(parseDidQuery(`${KEY_UPPER}@peer.example.org`)).toEqual({
++                did: KEY_UPPER,
++                serverName: "peer.example.org",
++            });
++        });
++
++        it("keeps a did:pkh intact, whose own id contains colons", () => {
++            expect(parseDidQuery(`${PKH_MIXED}@peer.example.org`)).toEqual({
++                did: PKH_MIXED,
++                serverName: "peer.example.org",
++            });
++        });
++
++        it("accepts a server with a port", () => {
++            expect(parseDidQuery(`${KEY_UPPER}@localhost:8448`)?.serverName).toBe("localhost:8448");
++        });
++
++        it("rejects a malformed or empty server rather than probing a guess", () => {
++            expect(parseDidQuery(`${KEY_UPPER}@`)).toBeNull();
++            expect(parseDidQuery(`${KEY_UPPER}@not a server`)).toBeNull();
++            expect(parseDidQuery(`${KEY_UPPER}@-leading-dash.org`)).toBeNull();
++        });
++
++        it("splits on the FIRST @, so a second one cannot smuggle in a server", () => {
++            expect(parseDidQuery(`${KEY_UPPER}@a.org@b.org`)).toBeNull();
++        });
++
++        it("still rejects things that are not DIDs at all", () => {
++            expect(parseDidQuery("@alice:example.org")).toBeNull();
++            expect(parseDidQuery("alice@example.org")).toBeNull();
++        });
++    });
 +});
 diff --git a/apps/web/src/utils/didLocalpart.ts b/apps/web/src/utils/didLocalpart.ts
 new file mode 100644
-index 0000000..d56b483
+index 0000000..9d28b96
 --- /dev/null
 +++ b/apps/web/src/utils/didLocalpart.ts
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,241 @@
 +/**
 +Copyright 2026 inblock.io
 +
@@ -345,45 +385,112 @@ index 0000000..d56b483
 +}
 +
 +/**
-+ * Whether a search term is shaped like a DID, i.e. worth spending two profile
-+ * lookups on. Deliberately a shape test, not a validity test: the authority on
-+ * whether this DID names anybody is the homeserver, one request later.
++ * A parsed search term: the DID, and optionally the homeserver it was pinned to.
 + *
-+ * The method name grammar is W3C DID Core's `1*(%x61-7A / DIGIT)`.
++ * A DID names a KEY, not a server -- so a bare DID can only be looked for on the
++ * searcher's own homeserver. The optional `did:...@server.org` suffix is what
++ * makes a federated lookup expressible at all. `@` is safe as the separator
++ * because W3C DID Core's method-specific-id grammar does not admit it, so the
++ * split is unambiguous for every DID method.
 + */
++export interface DidQuery {
++    did: string;
++    /** Present only when the term pinned one explicitly. */
++    serverName?: string;
++}
++
++const DID_PATTERN = /^did:[a-z0-9]+:[A-Za-z0-9._%:-]+$/;
++// Matrix server_name: a DNS name or IPv4 literal with an optional port. IPv6
++// literals are not matched; the cost of that is a search that finds nothing,
++// never a wrong answer.
++const SERVER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.-]*(?::\d{1,5})?$/;
++
++/**
++ * Parse a search term into a DID and an optional homeserver, or `null` if it is
++ * not DID-shaped -- which is the common case, since this runs on every keystroke
++ * in a box people mostly type names into.
++ *
++ * Deliberately a shape test, not a validity test: whether this DID names anybody
++ * is the homeserver's answer, one request later.
++ */
++export function parseDidQuery(term: string): DidQuery | null {
++    const trimmed = term.trim();
++    if (!trimmed.startsWith("did:")) return null;
++
++    const at = trimmed.indexOf("@");
++    const did = at === -1 ? trimmed : trimmed.slice(0, at);
++    const serverName = at === -1 ? undefined : trimmed.slice(at + 1);
++
++    if (!DID_PATTERN.test(did)) return null;
++    if (serverName !== undefined && !SERVER_PATTERN.test(serverName)) return null;
++    return serverName === undefined ? { did } : { did, serverName };
++}
++
++/** Whether a search term is worth spending profile lookups on. */
 +export function looksLikeDid(term: string): boolean {
-+    return /^did:[a-z0-9]+:[A-Za-z0-9._%:-]+$/.test(term);
++    return parseDidQuery(term) !== null;
 +}
 +
 +/**
-+ * Find the local Matrix user whose provider-attested DID is `did`, or `null`.
++ * A federated profile lookup is proxied by our homeserver to theirs, so an
++ * unreachable or slow peer stalls this request rather than failing it. The
++ * search box must not hang on that: past this bound the answer is "not found",
++ * which is also what the caller would have rendered anyway.
++ */
++const RESOLVE_TIMEOUT_MS = 10_000;
++
++function withTimeout<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
++    return Promise.race([work, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]);
++}
++
++/**
++ * Find the Matrix user whose provider-attested DID is the one searched for, or
++ * `null`.
 + *
-+ * Both candidate localparts are tried — the modern hash-derived shape and the
-+ * grandfathered legacy one — because which of the two an identity has depends
++ * Accepts either `did:key:z6Mk...` (looked for on the caller's own homeserver)
++ * or `did:key:z6Mk...@peer.example.org` (looked for on that one). The derivation
++ * is identical either way -- only the server half of the MXID changes -- and
++ * Synapse proxies the profile read over federation, returning custom fields
++ * through `on_profile_query`.
++ *
++ * Both candidate localparts are tried -- the modern hash-derived shape and the
++ * grandfathered legacy one -- because which of the two an identity has depends
 + * on when it first signed in, and that is not observable from the DID.
 + *
 + * **A candidate only counts when its published `io.inblock.did` matches.** The
-+ * derivation supplies the address; the attested field supplies the proof that
++ * derivation supplies the address; the attested field supplies the evidence that
 + * the address is the right one. Requiring the match is what makes a hit mean
 + * "this really is that key's account" rather than "something exists where I
-+ * guessed" — and it is what makes a mirror that has drifted fail closed.
++ * guessed" -- and it is what makes a mirror that has drifted fail closed.
 + *
-+ * Two consequences worth knowing, both deliberate:
++ * # What a match across federation does and does not prove
 + *
-+ * - An account that has not signed in since the provider started publishing the
-+ *   field is NOT findable this way. It becomes findable by itself, with no
-+ *   migration, because the provider re-asserts the field on every sign-in.
-+ * - This resolves only users on the caller's OWN homeserver. The derivation is
-+ *   our provider's, so a remote server's localparts are not ours to guess.
++ * What makes the field trustworthy is that the homeserver hosting it refuses a
++ * write to it from its own subject -- our vendored MSC4133 write-ACL patch. That
++ * holds for the caller's own server by construction, and for a peer exactly when
++ * the peer runs the same stack. **A peer that does not is free to let its users
++ * write any DID they like into their own profile**, so a pinned-server result is
++ * only as good as that server. This reads the field; it does not verify the
++ * ES256 proof sitting next to it, which is what would make the result
++ * self-supporting rather than server-supporting. The verifier already exists
++ * (`siwx-oidc-auth`'s `fetch_and_verify_did`) and porting it here is the upgrade
++ * path if a peer outside the stack ever has to be trusted.
 + *
-+ * Never throws: every failure mode — no extended-profile support, no such user,
-+ * a field that is absent or malformed, a network error — is `null`, because the
-+ * caller is a search box that must keep working.
++ * Never throws: every failure -- no extended-profile support, no such user, an
++ * absent or malformed field, an unreachable peer, a network error -- is `null`,
++ * because the caller is a search box that must keep working.
 + */
-+export async function resolveDidToUserId(client: MatrixClient, did: string): Promise<string | null> {
-+    const serverName = client.getDomain();
++export async function resolveDidToUserId(client: MatrixClient, term: string): Promise<string | null> {
++    const query = parseDidQuery(term);
++    if (!query) return null;
++
++    const serverName = query.serverName ?? client.getDomain();
 +    if (!serverName || !globalThis.crypto?.subtle) return null;
 +
++    return withTimeout(probe(client, query.did, serverName), RESOLVE_TIMEOUT_MS, null);
++}
++
++async function probe(client: MatrixClient, did: string, serverName: string): Promise<string | null> {
 +    try {
 +        if ((await client.doesServerSupportExtendedProfiles()) === false) return null;
 +    } catch {
@@ -412,6 +519,5 @@ index 0000000..d56b483
 +            // published DID. Not worth a log line per keystroke.
 +        }
 +    }
-+
 +    return null;
 +}
