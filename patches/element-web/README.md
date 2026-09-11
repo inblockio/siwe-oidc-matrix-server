@@ -92,6 +92,9 @@ re-litigated each time someone audits the registry.
 
 ## What runs on prod today
 
+**Entry 7 has NOT reached prod yet** (added 2026-09-11; it ships when the element
+image is next promoted). For entries 1-6:
+
 **All six patches are built into the production image and all six are active on
 `element.inblock.io`.** Verified 2026-09-01 against the deployed artifact
 (`element-web@sha256:d7ba8b7b`, label `org.opencontainers.image.revision=60b037b`)
@@ -128,8 +131,10 @@ prod's hostname not being in `STAGING_HOSTS`.
 
 ## Which Dockerfile applies what
 
-**One Dockerfile, all six patches.** `dockerfiles/Dockerfile.element` on `main`
-applies every numbered patch below, in this file's order.
+**One Dockerfile, all seven patches.** `dockerfiles/Dockerfile.element` on `main`
+applies every numbered patch below, in this file's order. Entry 7
+(`show-attested-did`) was added 2026-09-11 and is the newest; entries 1-6 are the
+set the paragraphs below describe.
 
 This section used to describe a split: the `dev` Dockerfile applied all six
 while the `main` one applied 1, 5 and 6 only, with entries 2–4 described as
@@ -351,6 +356,47 @@ A tag bump must try every patch in this file's order.
   `enableEventIndexing` stays upstream's `true` (same as Desktop).
 
 ---
+
+### 7. `show-attested-did.patch` — POLICY (permanent, deployment-specific)
+
+- **What:** renders the provider-attested DID (`io.inblock.did`, MSC4133 custom profile
+  field) directly under the MXID in the member-info panel, with Element's own
+  `CopyableText` affordance, a tooltip carrying the full value, and a label that reads
+  `DID` or `DID (unsigned)`. Adds `src/hooks/useAttestedDid.ts`, four lines of JSX in
+  `UserInfoHeaderView.tsx`, one CSS block, two `en_EN.json` strings.
+- **Why we maintain it:** siwx-oidc publishes each user's DID into that field and the
+  homeserver refuses a write to it from anyone but the provider (see
+  `patches/synapse/README.md`), but **no Element surface reads it**. Verified against
+  the v1.12.26 source: the only extended-profile consumers upstream are `m.tz`
+  (timezone) and `org.matrix.msc4426.status`, both specific keys — there is no generic
+  custom-field rendering, so without this patch the identity that the whole
+  attested-DID feature exists to publish is invisible to every user of the deployment
+  that publishes it.
+- **Trust framing is load-bearing, and the patch states it in code:** the row is a
+  **discovery hint**, not an authorization source. It does NOT verify the ES256 proof
+  client-side; what makes the value trustworthy here is the homeserver write-ACL, and a
+  relying party still verifies offline (`siwx-oidc-auth --verify-did`). `DID (unsigned)`
+  is shown when the provider's key was ephemeral and no `proof` was minted, so the two
+  cases are never conflated in the UI.
+- **Failure behaviour:** every failure path renders nothing — no published field (a
+  404, which is the COMMON case for users of other homeservers), a server without
+  extended-profile support, a malformed value, a network error. Logged at `debug`, never
+  `warn`: this hook runs for every member panel opened against every homeserver.
+- **Evidence:** siwx-oidc `docs/audits/2026-09-10-msc4133-acl-probe.md` (the field is
+  world-readable and provider-owned); `docs/2026-09-10-HANDOVER-attested-did-complete.md`.
+- **Upstream status:** not upstreamable as-is — `io.inblock.did` is OUR field name, and
+  upstream would need a generic custom-profile-field UI (or MSC4133 field registration)
+  before anything like this could land. If upstream ships generic custom-field
+  rendering, this patch should be **dropped**, not ported.
+- **Retirement:** upstream renders custom profile fields generically, OR the
+  `io.inblock.did` contract is retired.
+- **Order:** applied LAST in `Dockerfile.element`. Its `en_EN.json` hunk was generated
+  against the tree with entries 1-6 already applied; moving it earlier breaks that hunk.
+- **Coverage:** none yet in `e2e/element/` — the panel row is rendered from a profile
+  field, so a leg needs an account with a published DID on the lab stack. **This is the
+  one rule-2 exception in this registry and it should be closed**: add a leg that opens
+  the member panel for a siwx-provisioned user and asserts the DID text matches the
+  field read over the C-S API.
 
 ## Runtime-stage deltas (not `.patch` files, still upstream deviations)
 

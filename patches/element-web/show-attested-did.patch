@@ -1,0 +1,197 @@
+diff --git a/apps/web/res/css/views/right_panel/_UserInfo.pcss b/apps/web/res/css/views/right_panel/_UserInfo.pcss
+index a8a4ef7..5fb692d 100644
+--- a/apps/web/res/css/views/right_panel/_UserInfo.pcss
++++ b/apps/web/res/css/views/right_panel/_UserInfo.pcss
+@@ -109,6 +109,22 @@ Please see LICENSE files in the repository root for full details.
+             height: 28px;
+         }
+ 
++        /* The provider-attested DID, rendered directly under the MXID it is
++           bound to. Deliberately quieter than the MXID: the MXID is the handle
++           people use, the DID is the identity they can verify. */
++        .mx_UserInfo_profile_did {
++            color: var(--cpd-color-text-secondary);
++            min-height: 28px;
++            max-width: 100%;
++            overflow-wrap: anywhere;
++
++            .mx_UserInfo_profile_did_label {
++                color: var(--cpd-color-text-secondary);
++                margin-inline-end: var(--cpd-space-1x);
++                font-weight: var(--cpd-font-weight-semibold);
++            }
++        }
++
+         .mx_UserInfo_profileStatus {
+             height: 20px;
+         }
+diff --git a/apps/web/src/components/views/right_panel/user_info/UserInfoHeaderView.tsx b/apps/web/src/components/views/right_panel/user_info/UserInfoHeaderView.tsx
+index 1e21422..3ea1028 100644
+--- a/apps/web/src/components/views/right_panel/user_info/UserInfoHeaderView.tsx
++++ b/apps/web/src/components/views/right_panel/user_info/UserInfoHeaderView.tsx
+@@ -17,6 +17,8 @@ import PresenceLabel from "../../rooms/PresenceLabel";
+ import CopyableText from "../../elements/CopyableText";
+ import { UserInfoHeaderVerificationView } from "./UserInfoHeaderVerificationView";
+ import { useUserStatus } from "../../../../hooks/useUserStatus";
++import { abbreviateDid, useAttestedDid } from "../../../../hooks/useAttestedDid";
++import { _t } from "../../../../languageHandler";
+ 
+ export interface UserInfoHeaderViewProps {
+     member: Member;
+@@ -35,6 +37,7 @@ export const UserInfoHeaderView: React.FC<UserInfoHeaderViewProps> = ({
+     const avatarUrl = (member as User).avatarUrl;
+     const displayName = (member as RoomMember).rawDisplayName;
+     const userStatus = useUserStatus(member.userId);
++    const attestedDid = useAttestedDid(member.userId);
+ 
+     let presenceLabel: JSX.Element | undefined;
+ 
+@@ -91,6 +94,22 @@ export const UserInfoHeaderView: React.FC<UserInfoHeaderViewProps> = ({
+                             {vm.userIdentifier}
+                         </CopyableText>
+                     </Text>
++                    {attestedDid && (
++                        <Text size="sm" weight="regular" className="mx_UserInfo_profile_did">
++                            <CopyableText getTextToCopy={() => attestedDid.did} border={false}>
++                                <Tooltip label={attestedDid.did}>
++                                    <span>
++                                        <span className="mx_UserInfo_profile_did_label">
++                                            {attestedDid.signed
++                                                ? _t("user_info|did_label")
++                                                : _t("user_info|did_label_unsigned")}
++                                        </span>
++                                        {abbreviateDid(attestedDid.did)}
++                                    </span>
++                                </Tooltip>
++                            </CopyableText>
++                        </Text>
++                    )}
+                 </Flex>
+                 {!hideVerificationSection && <UserInfoHeaderVerificationView member={member} devices={devices} />}
+             </Container>
+diff --git a/apps/web/src/hooks/useAttestedDid.ts b/apps/web/src/hooks/useAttestedDid.ts
+new file mode 100644
+index 0000000..22a15bb
+--- /dev/null
++++ b/apps/web/src/hooks/useAttestedDid.ts
+@@ -0,0 +1,107 @@
++/**
++Copyright 2026 inblock.io
++
++SPDX-License-Identifier: AGPL-3.0-only OR GPL-3.0-only OR LicenseRef-Element-Commercial
++Please see LICENSE files in the repository root for full details.
++*/
++
++import { useEffect, useState } from "react";
++import { logger as rootLogger } from "matrix-js-sdk/src/logger";
++
++import { useMatrixClientContext } from "../contexts/MatrixClientContext";
++
++const logger = rootLogger.getChild("useAttestedDid");
++
++/**
++ * The MSC4133 profile field an identity provider publishes a user's DID into.
++ *
++ * This literal is one side of a THREE-sided contract — provider
++ * (siwx-oidc `did_assertion::DID_PROFILE_FIELD`), verifier
++ * (`siwx-oidc-auth`), and homeserver (Synapse's
++ * `experimental_features.msc4133_key_denylist`, which is what makes the field
++ * unwritable by its own subject). The three deploy independently and fail
++ * APART: renaming it here alone means every account reads as "no DID".
++ */
++export const DID_PROFILE_FIELD = "io.inblock.did";
++
++export interface AttestedDid {
++    /** The DID exactly as published. Never normalised: `did:key` case is key material. */
++    did: string;
++    /** Whether the provider attached a signature over the DID↔MXID binding. */
++    signed: boolean;
++}
++
++/**
++ * Read the DID published in a user's profile, if there is one.
++ *
++ * Deliberately a plain read with no verification: this is a **discovery hint**,
++ * not an authorization source. The signature is what a relying party checks
++ * offline; what makes the value trustworthy *in this client* is that the
++ * homeserver refuses a write to this field from anyone but the provider. A
++ * client-side ES256 check would need the provider's JWKS and would still prove
++ * only that the provider once said this — so the honest UI move is to show the
++ * value, show whether it is signed, and claim nothing further.
++ *
++ * Every failure — no such field (404), a server without extended profiles, a
++ * malformed value, a network error — yields `undefined`, i.e. the row simply
++ * does not render. This sits in the member-info panel of every user, so it must
++ * never throw and never block.
++ */
++export function useAttestedDid(userId: string | undefined): AttestedDid | undefined {
++    const client = useMatrixClientContext();
++    const [attested, setAttested] = useState<AttestedDid | undefined>();
++
++    useEffect(() => {
++        let cancelled = false;
++        (async (): Promise<void> => {
++            if (!userId) {
++                setAttested(undefined);
++                return;
++            }
++            try {
++                if ((await client.doesServerSupportExtendedProfiles()) === false) {
++                    if (!cancelled) setAttested(undefined);
++                    return;
++                }
++                const raw = await client.getExtendedProfileProperty(userId, DID_PROFILE_FIELD);
++                if (cancelled) return;
++                // The wire contract is an OBJECT, `{did, proof?}`, written as one
++                // atomic PUT. `proof` is absent — not null, not "" — when the
++                // provider's signing key is ephemeral. Anything that does not
++                // match that shape is not ours to render.
++                const did =
++                    typeof raw === "object" && raw !== null && typeof (raw as Record<string, unknown>).did === "string"
++                        ? ((raw as Record<string, unknown>).did as string)
++                        : undefined;
++                if (!did || !did.startsWith("did:")) {
++                    setAttested(undefined);
++                    return;
++                }
++                const proof = (raw as Record<string, unknown>).proof;
++                setAttested({ did, signed: typeof proof === "string" && proof.length > 0 });
++            } catch (ex) {
++                // A user with no published DID is the COMMON case, and it arrives
++                // as a 404. Debug, never warn: this runs for every member panel
++                // opened on every homeserver, most of which publish nothing.
++                logger.debug(`No attested DID for ${userId}`, ex);
++                if (!cancelled) setAttested(undefined);
++            }
++        })();
++        return () => {
++            cancelled = true;
++        };
++    }, [client, userId]);
++
++    return attested;
++}
++
++/**
++ * Shorten a DID for display while keeping both ends, which is where the
++ * distinguishing bytes are: the method prefix identifies the key type, and the
++ * tail is what a human compares when checking one DID against another. The copy
++ * button always copies the WHOLE value.
++ */
++export function abbreviateDid(did: string, head = 18, tail = 6): string {
++    if (did.length <= head + tail + 1) return did;
++    return `${did.slice(0, head)}…${did.slice(-tail)}`;
++}
+diff --git a/apps/web/src/i18n/strings/en_EN.json b/apps/web/src/i18n/strings/en_EN.json
+index a99f4bf..d59f7aa 100644
+--- a/apps/web/src/i18n/strings/en_EN.json
++++ b/apps/web/src/i18n/strings/en_EN.json
+@@ -3759,6 +3759,8 @@
+         "demote_self_confirm_description_space": "You will not be able to undo this change as you are demoting yourself, if you are the last privileged user in the space it will be impossible to regain privileges.",
+         "demote_self_confirm_room": "You will not be able to undo this change as you are demoting yourself, if you are the last privileged user in the room it will be impossible to regain privileges.",
+         "demote_self_confirm_title": "Demote yourself?",
++        "did_label": "DID",
++        "did_label_unsigned": "DID (unsigned)",
+         "disinvite_button_room": "Disinvite from room",
+         "disinvite_button_room_name": "Disinvite from %(roomName)s",
+         "disinvite_button_space": "Disinvite from space",
