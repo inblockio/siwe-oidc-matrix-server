@@ -80,6 +80,19 @@ RUN git apply --verbose /tmp/ew-eventindex.patch
 COPY patches/element-web/show-attested-did.patch /tmp/ew-attested-did.patch
 RUN git apply --verbose /tmp/ew-attested-did.patch
 
+# Resolve a DID typed into either search box (Spotlight and the invite/DM
+# dialog) to the MXID it was derived from. A DID can never BE a user ID —
+# Synapse's localpart grammar has no colon and no uppercase — so without this
+# there is no way to look somebody up by their key at all: the user directory
+# indexes only display name and user ID, never profile fields.
+#
+# Applied AFTER show-attested-did and DEPENDS ON IT: it moves the shared
+# DID_PROFILE_FIELD constant into the new pure module and leaves that patch's
+# hook re-exporting it. Reordering these two, or dropping entry 7 alone, breaks
+# the build. Same fail-loudly contract as every patch above.
+COPY patches/element-web/resolve-did-search.patch /tmp/ew-did-search.patch
+RUN git apply --verbose /tmp/ew-did-search.patch
+
 # Install exactly what the lockfile pins.
 RUN corepack enable && pnpm install --frozen-lockfile
 

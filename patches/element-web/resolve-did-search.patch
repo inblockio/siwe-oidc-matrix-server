@@ -1,0 +1,417 @@
+diff --git a/apps/web/src/components/views/dialogs/InviteDialog.tsx b/apps/web/src/components/views/dialogs/InviteDialog.tsx
+index 71eab82..de7fc2a 100644
+--- a/apps/web/src/components/views/dialogs/InviteDialog.tsx
++++ b/apps/web/src/components/views/dialogs/InviteDialog.tsx
+@@ -17,6 +17,7 @@ import { DialPadIcon, UserProfileSolidIcon } from "@vector-im/compound-design-to
+ 
+ import { _t, _td } from "../../../languageHandler";
+ import { MatrixClientPeg } from "../../../MatrixClientPeg";
++import { looksLikeDid, resolveDidToUserId } from "../../../utils/didLocalpart";
+ import { makeRoomPermalink, makeUserPermalink } from "../../../utils/permalinks/Permalinks";
+ import DMRoomMap from "../../../utils/DMRoomMap";
+ import * as Email from "../../../email";
+@@ -546,16 +547,29 @@ export default class InviteDialog extends React.PureComponent<Props, IInviteDial
+ 
+                     // While we're here, try and autocomplete a search result for the mxid itself
+                     // if there's no matches (and the input looks like a mxid).
+-                    if (term[0] === "@" && term.indexOf(":") > 1) {
++                    //
++                    // A DID gets the same treatment one step removed: it can never
++                    // BE a user ID (Synapse's localpart grammar has no colon and no
++                    // uppercase), so it is first resolved to the MXID it was derived
++                    // from — see utils/didLocalpart.ts. The user directory cannot
++                    // find these at all, so this is the only path to them.
++                    const resolvedUserId = looksLikeDid(term)
++                        ? await resolveDidToUserId(MatrixClientPeg.safeGet(), term)
++                        : term[0] === "@" && term.indexOf(":") > 1
++                          ? term
++                          : null;
++                    if (resolvedUserId) {
+                         try {
+-                            const profile = await this.profilesStore.getOrFetchProfile(term, { shouldThrow: true });
++                            const profile = await this.profilesStore.getOrFetchProfile(resolvedUserId, {
++                                shouldThrow: true,
++                            });
+ 
+                             if (profile) {
+                                 // If we have a profile, we have enough information to assume that
+                                 // the mxid can be invited - add it to the list. We stick it at the
+                                 // top so it is most obviously presented to the user.
+                                 r.results.splice(0, 0, {
+-                                    user_id: term,
++                                    user_id: resolvedUserId,
+                                     display_name: profile["displayname"],
+                                     avatar_url: profile["avatar_url"],
+                                 });
+diff --git a/apps/web/src/components/views/dialogs/spotlight/SpotlightDialog.tsx b/apps/web/src/components/views/dialogs/spotlight/SpotlightDialog.tsx
+index 20a8b60..c235783 100644
+--- a/apps/web/src/components/views/dialogs/spotlight/SpotlightDialog.tsx
++++ b/apps/web/src/components/views/dialogs/spotlight/SpotlightDialog.tsx
+@@ -55,6 +55,7 @@ import { type ViewRoomPayload } from "../../../../dispatcher/payloads/ViewRoomPa
+ import { useDebouncedCallback } from "../../../../hooks/spotlight/useDebouncedCallback";
+ import { useRecentSearches } from "../../../../hooks/spotlight/useRecentSearches";
+ import { useProfileInfo } from "../../../../hooks/useProfileInfo";
++import { looksLikeDid } from "../../../../utils/didLocalpart";
+ import { usePublicRoomDirectory } from "../../../../hooks/usePublicRoomDirectory";
+ import { useSpaceResults } from "../../../../hooks/useSpaceResults";
+ import { useUserDirectory } from "../../../../hooks/useUserDirectory";
+@@ -379,7 +380,13 @@ const SpotlightDialog: React.FC<IProps> = ({ initialText = "", initialFilter = n
+         searchParams,
+     );
+     useDebouncedCallback(filter === Filter.People, searchPeople, searchParams);
+-    useDebouncedCallback(filter === Filter.People, searchProfileInfo, searchParams);
++    // Also run the profile lookup for a DID typed with NO filter selected.
++    // Upstream only resolves a typed identifier under Filter.People, which is
++    // fine for an MXID (the user directory has already surfaced those people),
++    // but a DID matches nothing in the directory — its whole purpose is to
++    // address someone the searcher cannot otherwise name, so requiring them to
++    // pick a filter first would hide the only result there is.
++    useDebouncedCallback(filter === Filter.People || looksLikeDid(trimmedQuery), searchProfileInfo, searchParams);
+ 
+     const possibleResults = useMemo<Result[]>(() => {
+         const visibleRooms = findVisibleRooms(cli, msc3946ProcessDynamicPredecessor);
+diff --git a/apps/web/src/hooks/useAttestedDid.ts b/apps/web/src/hooks/useAttestedDid.ts
+index 22a15bb..8550365 100644
+--- a/apps/web/src/hooks/useAttestedDid.ts
++++ b/apps/web/src/hooks/useAttestedDid.ts
+@@ -9,20 +9,13 @@ import { useEffect, useState } from "react";
+ import { logger as rootLogger } from "matrix-js-sdk/src/logger";
+ 
+ import { useMatrixClientContext } from "../contexts/MatrixClientContext";
++import { DID_PROFILE_FIELD } from "../utils/didLocalpart";
+ 
+ const logger = rootLogger.getChild("useAttestedDid");
+ 
+-/**
+- * The MSC4133 profile field an identity provider publishes a user's DID into.
+- *
+- * This literal is one side of a THREE-sided contract — provider
+- * (siwx-oidc `did_assertion::DID_PROFILE_FIELD`), verifier
+- * (`siwx-oidc-auth`), and homeserver (Synapse's
+- * `experimental_features.msc4133_key_denylist`, which is what makes the field
+- * unwritable by its own subject). The three deploy independently and fail
+- * APART: renaming it here alone means every account reads as "no DID".
+- */
+-export const DID_PROFILE_FIELD = "io.inblock.did";
++// Defined in utils/didLocalpart.ts, which needs it without pulling in React;
++// re-exported here so this hook stays the obvious place to import it from.
++export { DID_PROFILE_FIELD } from "../utils/didLocalpart";
+ 
+ export interface AttestedDid {
+     /** The DID exactly as published. Never normalised: `did:key` case is key material. */
+diff --git a/apps/web/src/hooks/useProfileInfo.ts b/apps/web/src/hooks/useProfileInfo.ts
+index d0cfd4a..8d33da9 100644
+--- a/apps/web/src/hooks/useProfileInfo.ts
++++ b/apps/web/src/hooks/useProfileInfo.ts
+@@ -10,6 +10,7 @@ import { useCallback, useState } from "react";
+ 
+ import { MatrixClientPeg } from "../MatrixClientPeg";
+ import { useLatestResult } from "./useLatestResult";
++import { looksLikeDid, resolveDidToUserId } from "../utils/didLocalpart";
+ 
+ export interface IProfileInfoOpts {
+     query?: string;
+@@ -36,16 +37,37 @@ export const useProfileInfo = (): {
+     const search = useCallback(
+         async ({ query: term }: IProfileInfoOpts): Promise<boolean> => {
+             updateQuery(term);
+-            if (!term?.length || !term.startsWith("@") || !term.includes(":")) {
++            if (!term?.length) {
++                setProfile(null);
++                return true;
++            }
++
++            // A DID can never be spelled as a user ID — Synapse's localpart
++            // grammar has no colon and no uppercase, so `did:key:z6Mk…` cannot
++            // survive as one. It can still be RESOLVED to one, because the
++            // provider derives the localpart from the DID by a pure function.
++            // See utils/didLocalpart.ts for why the resolution is verified
++            // against the attested profile field rather than trusted.
++            const isDid = looksLikeDid(term);
++            if (!isDid && (!term.startsWith("@") || !term.includes(":"))) {
+                 setProfile(null);
+                 return true;
+             }
+ 
+             setLoading(true);
+             try {
+-                const result = await MatrixClientPeg.safeGet().getProfileInfo(term);
++                const client = MatrixClientPeg.safeGet();
++                const userId = isDid ? await resolveDidToUserId(client, term) : term;
++                if (!userId) {
++                    // A DID that names nobody here is an ordinary empty result,
++                    // not a failure: report success so the caller does not fall
++                    // back to an error path over a search that simply missed.
++                    updateResult(term, null);
++                    return true;
++                }
++                const result = await client.getProfileInfo(userId);
+                 updateResult(term, {
+-                    user_id: term,
++                    user_id: userId,
+                     avatar_url: result.avatar_url,
+                     display_name: result.displayname,
+                 });
+diff --git a/apps/web/src/utils/didLocalpart.test.ts b/apps/web/src/utils/didLocalpart.test.ts
+new file mode 100644
+index 0000000..41ae907
+--- /dev/null
++++ b/apps/web/src/utils/didLocalpart.test.ts
+@@ -0,0 +1,76 @@
++/**
++Copyright 2026 inblock.io
++
++SPDX-License-Identifier: AGPL-3.0-only OR GPL-3.0-only OR LicenseRef-Element-Commercial
++Please see LICENSE files in the repository root for full details.
++*/
++
++import { describe, it, expect } from "vitest";
++
++import { canonicaliseDid, legacyLocalpartForDid, localpartForDid, looksLikeDid } from "./didLocalpart";
++
++/**
++ * These are the SAME vectors pinned by siwx-oidc's `src/mxid.rs` tests
++ * (`PKH_EXPECTED`, `KEY_UPPER_EXPECTED`, `KEY_LOWER_EXPECTED`). This file is a
++ * hand-maintained mirror of that Rust module, and nothing links the two, so
++ * these constants are the only thing standing between a silent drift and a
++ * client that looks up the wrong address. If one of these fails, do not "fix"
++ * the expectation — the derivation changed, and changing it silently reassigns
++ * Matrix accounts.
++ */
++const PKH_LOWER = "did:pkh:eip155:1:0x7a760ea15d76f935c8646b449af488c2b0021734";
++const PKH_MIXED = "did:pkh:eip155:1:0x7A760ea15d76F935c8646b449AF488c2B0021734";
++const PKH_EXPECTED = "37rb2h7bdij3o1qm";
++
++const KEY_UPPER = "did:key:z6MkmWziJJ2k3ckqVqnmMGVKefMhDSe4ZxrfvqksxDMGBa4v";
++const KEY_UPPER_EXPECTED = "0f2g2c0d3vclsu3i";
++const KEY_LOWER = "did:key:z6mkmwzijj2k3ckqvqnmmgvkefmhdse4zxrfvqksxdmgba4v";
++const KEY_LOWER_EXPECTED = "4qhlwf2qqvk7sqfw";
++
++describe("didLocalpart", () => {
++    it("matches the localpart vectors pinned by the server's mxid.rs", async () => {
++        await expect(localpartForDid(PKH_LOWER)).resolves.toBe(PKH_EXPECTED);
++        await expect(localpartForDid(KEY_UPPER)).resolves.toBe(KEY_UPPER_EXPECTED);
++        await expect(localpartForDid(KEY_LOWER)).resolves.toBe(KEY_LOWER_EXPECTED);
++    });
++
++    it("folds did:pkh case, because EIP-55 mixed case is a checksum and not identity", async () => {
++        expect(canonicaliseDid(PKH_MIXED)).toBe(PKH_LOWER);
++        await expect(localpartForDid(PKH_MIXED)).resolves.toBe(PKH_EXPECTED);
++    });
++
++    it("PRESERVES did:key case, because multibase case is key material", async () => {
++        // The whole point: these two differ only in case and are two DIFFERENT
++        // public keys. Folding them onto one localpart is siwx-oidc#17.
++        expect(canonicaliseDid(KEY_UPPER)).toBe(KEY_UPPER);
++        expect(KEY_UPPER_EXPECTED).not.toBe(KEY_LOWER_EXPECTED);
++    });
++
++    it("always produces 16 lowercase base36 characters in one run", async () => {
++        for (const did of [PKH_LOWER, KEY_UPPER, KEY_LOWER]) {
++            const localpart = await localpartForDid(did);
++            expect(localpart).toMatch(/^[0-9a-z]{16}$/);
++        }
++    });
++
++    it("never leaks the DID into the localpart", async () => {
++        const localpart = await localpartForDid(PKH_LOWER);
++        expect(localpart).not.toContain("7a760ea1");
++        expect(localpart).not.toContain("did");
++    });
++
++    it("derives the grandfathered legacy shape for pre-migration accounts", () => {
++        expect(legacyLocalpartForDid(PKH_MIXED)).toBe("did-pkh-eip155-1-0x7a760ea15d76f935c8646b449af488c2b0021734");
++    });
++
++    it("recognises DIDs and rejects everything a search box otherwise sees", () => {
++        expect(looksLikeDid(PKH_LOWER)).toBe(true);
++        expect(looksLikeDid(KEY_UPPER)).toBe(true);
++        expect(looksLikeDid("did:peer:2.Ez6LSbysY2xFMRp")).toBe(true);
++        // An MXID must stay on the existing code path, not be treated as a DID.
++        expect(looksLikeDid("@alice:example.org")).toBe(false);
++        expect(looksLikeDid("alice")).toBe(false);
++        expect(looksLikeDid("did:")).toBe(false);
++        expect(looksLikeDid("DID:key:z6Mk")).toBe(false);
++    });
++});
+diff --git a/apps/web/src/utils/didLocalpart.ts b/apps/web/src/utils/didLocalpart.ts
+new file mode 100644
+index 0000000..d56b483
+--- /dev/null
++++ b/apps/web/src/utils/didLocalpart.ts
+@@ -0,0 +1,175 @@
++/**
++Copyright 2026 inblock.io
++
++SPDX-License-Identifier: AGPL-3.0-only OR GPL-3.0-only OR LicenseRef-Element-Commercial
++Please see LICENSE files in the repository root for full details.
++*/
++
++import { type MatrixClient } from "matrix-js-sdk/src/matrix";
++
++/**
++ * The MSC4133 profile field an identity provider publishes a user's DID into.
++ *
++ * This literal is one side of a THREE-sided contract — provider
++ * (siwx-oidc `did_assertion::DID_PROFILE_FIELD`), verifier (`siwx-oidc-auth`),
++ * and homeserver (Synapse's `experimental_features.msc4133_key_denylist`,
++ * which is what makes the field unwritable by its own subject). The three
++ * deploy independently and fail APART: renaming it here alone means every
++ * account reads as "no DID".
++ *
++ * Defined in this module rather than in `useAttestedDid` so that resolving a
++ * DID stays free of React: the hook re-exports it, so importers of either
++ * module see one constant.
++ */
++export const DID_PROFILE_FIELD = "io.inblock.did";
++
++/**
++ * Resolve a DID to the Matrix user it belongs to.
++ *
++ * # Why this can exist at all
++ *
++ * A DID can never *be* an MXID. Synapse's `MXID_LOCALPART_ALLOWED_CHARACTERS`
++ * (1.159.0) is `a-z 0-9 - / _ . = +`: no colon — and a colon is structurally
++ * impossible anyway, since the first one in an MXID ends the localpart — and no
++ * uppercase, which alone rules out `did:key`, whose multibase payload is
++ * case-sensitive key material. So `@did:key:z6Mk…:server` is not a user ID that
++ * can be typed, stored or routed.
++ *
++ * What IS possible is the forward direction: siwx-oidc derives the localpart
++ * from the DID by a pure function, so a client that knows that function can
++ * compute the candidate address offline and then simply ask whether it exists.
++ *
++ * # This is a HAND-MAINTAINED MIRROR of siwx-oidc's `src/mxid.rs`
++ *
++ * It is the third copy (after `e2e/browser/mxid-helper.mjs`), and nothing links
++ * them — they drift silently. A previous hand-copy of `localpart_for` diverged
++ * by unconditionally lowercasing every DID, which is exactly the bug class that
++ * maps two different public keys onto one account (siwx-oidc#17).
++ *
++ * That hazard is neutralised here by never trusting the derivation on its own:
++ * {@link resolveDidToUserId} reads the provider-attested `io.inblock.did` back
++ * off the candidate profile and requires it to match the DID that was searched
++ * for. A divergent derivation therefore yields **no result**, never the wrong
++ * user — it can cost a false negative, it cannot misdirect. `didLocalpart.test.ts`
++ * pins the same vectors as `mxid.rs`'s own tests so drift is caught in CI first.
++ */
++
++const BASE36_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
++const OUTPUT_WIDTH = 16;
++const DIGEST_BYTES_KEPT = 10; // 80 bits — see the "why 80 bits" note in src/mxid.rs
++
++/**
++ * `mxid::canonicalize`. The case rule is method-aware and is NOT cosmetic:
++ *
++ * - `did:pkh:*` is lowercased. The mixed case in an `0x…` address is an EIP-55
++ *   checksum over the same address, not separate identity.
++ * - `did:key:*` / `did:peer:*` keep their case. These are multibase base58btc,
++ *   where case is part of the encoded key bytes.
++ */
++export function canonicaliseDid(did: string): string {
++    return did.startsWith("did:pkh:") ? did.toLowerCase() : did;
++}
++
++/**
++ * `mxid::legacy_localpart` — the pre-2026-09 derivation. Permanent
++ * infrastructure, not dead code: an account provisioned under it keeps it
++ * forever, because Synapse has no user-rename API. Any lookup that checks only
++ * the modern shape silently fails to find every account created before the
++ * migration.
++ */
++export function legacyLocalpartForDid(did: string): string {
++    return did.replaceAll(":", "-").toLowerCase();
++}
++
++/**
++ * `mxid::localpart_for` — exactly 16 lowercase base36 characters, one
++ * alphanumeric run, no separators (matrix.org's MSC4284 policy server refuses
++ * the long multi-word legacy shape).
++ */
++export async function localpartForDid(did: string): Promise<string> {
++    const bytes = new TextEncoder().encode(canonicaliseDid(did));
++    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
++
++    let n = 0n;
++    for (const byte of digest.subarray(0, DIGEST_BYTES_KEPT)) {
++        n = (n << 8n) | BigInt(byte);
++    }
++    let out = "";
++    while (n > 0n) {
++        out = BASE36_ALPHABET[Number(n % 36n)] + out;
++        n /= 36n;
++    }
++    return out.padStart(OUTPUT_WIDTH, BASE36_ALPHABET[0]);
++}
++
++/**
++ * Whether a search term is shaped like a DID, i.e. worth spending two profile
++ * lookups on. Deliberately a shape test, not a validity test: the authority on
++ * whether this DID names anybody is the homeserver, one request later.
++ *
++ * The method name grammar is W3C DID Core's `1*(%x61-7A / DIGIT)`.
++ */
++export function looksLikeDid(term: string): boolean {
++    return /^did:[a-z0-9]+:[A-Za-z0-9._%:-]+$/.test(term);
++}
++
++/**
++ * Find the local Matrix user whose provider-attested DID is `did`, or `null`.
++ *
++ * Both candidate localparts are tried — the modern hash-derived shape and the
++ * grandfathered legacy one — because which of the two an identity has depends
++ * on when it first signed in, and that is not observable from the DID.
++ *
++ * **A candidate only counts when its published `io.inblock.did` matches.** The
++ * derivation supplies the address; the attested field supplies the proof that
++ * the address is the right one. Requiring the match is what makes a hit mean
++ * "this really is that key's account" rather than "something exists where I
++ * guessed" — and it is what makes a mirror that has drifted fail closed.
++ *
++ * Two consequences worth knowing, both deliberate:
++ *
++ * - An account that has not signed in since the provider started publishing the
++ *   field is NOT findable this way. It becomes findable by itself, with no
++ *   migration, because the provider re-asserts the field on every sign-in.
++ * - This resolves only users on the caller's OWN homeserver. The derivation is
++ *   our provider's, so a remote server's localparts are not ours to guess.
++ *
++ * Never throws: every failure mode — no extended-profile support, no such user,
++ * a field that is absent or malformed, a network error — is `null`, because the
++ * caller is a search box that must keep working.
++ */
++export async function resolveDidToUserId(client: MatrixClient, did: string): Promise<string | null> {
++    const serverName = client.getDomain();
++    if (!serverName || !globalThis.crypto?.subtle) return null;
++
++    try {
++        if ((await client.doesServerSupportExtendedProfiles()) === false) return null;
++    } catch {
++        return null;
++    }
++
++    const candidates = [await localpartForDid(did), legacyLocalpartForDid(did)];
++    const wanted = canonicaliseDid(did);
++
++    for (const localpart of new Set(candidates)) {
++        const userId = `@${localpart}:${serverName}`;
++        try {
++            const raw = await client.getExtendedProfileProperty(userId, DID_PROFILE_FIELD);
++            const published =
++                typeof raw === "object" && raw !== null && typeof (raw as Record<string, unknown>).did === "string"
++                    ? ((raw as Record<string, unknown>).did as string)
++                    : undefined;
++            // Compared under the SAME canonicalisation the account itself is
++            // keyed on, so that searching for the lowercase spelling of an
++            // EIP-55 wallet address finds the account that published the
++            // checksummed one. For did:key this is byte-for-byte, since
++            // canonicaliseDid leaves those untouched.
++            if (published && canonicaliseDid(published) === wanted) return userId;
++        } catch {
++            // The overwhelmingly common case: no such user, or a user with no
++            // published DID. Not worth a log line per keystroke.
++        }
++    }
++
++    return null;
++}

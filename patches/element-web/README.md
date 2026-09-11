@@ -92,8 +92,8 @@ re-litigated each time someone audits the registry.
 
 ## What runs on prod today
 
-**Entry 7 has NOT reached prod yet** (added 2026-09-11; it ships when the element
-image is next promoted). For entries 1-6:
+**Entries 7 and 8 have NOT reached prod yet** (both added 2026-09-11; they ship when
+the element image is next promoted). For entries 1-6:
 
 **All six patches are built into the production image and all six are active on
 `element.inblock.io`.** Verified 2026-09-01 against the deployed artifact
@@ -131,10 +131,11 @@ prod's hostname not being in `STAGING_HOSTS`.
 
 ## Which Dockerfile applies what
 
-**One Dockerfile, all seven patches.** `dockerfiles/Dockerfile.element` on `main`
-applies every numbered patch below, in this file's order. Entry 7
-(`show-attested-did`) was added 2026-09-11 and is the newest; entries 1-6 are the
-set the paragraphs below describe.
+**One Dockerfile, all eight patches.** `dockerfiles/Dockerfile.element` on `main`
+applies every numbered patch below, in this file's order. Entries 7
+(`show-attested-did`) and 8 (`resolve-did-search`) were added 2026-09-11 and are
+the newest; entries 1-6 are the set the paragraphs below describe. **8 depends on
+7** and must stay after it — see its Order note.
 
 This section used to describe a split: the `dev` Dockerfile applied all six
 while the `main` one applied 1, 5 and 6 only, with entries 2–4 described as
@@ -397,6 +398,67 @@ A tag bump must try every patch in this file's order.
   one rule-2 exception in this registry and it should be closed**: add a leg that opens
   the member panel for a siwx-provisioned user and asserts the DID text matches the
   field read over the C-S API.
+
+### 8. `resolve-did-search.patch` — POLICY (permanent, deployment-specific)
+
+- **What:** makes a DID typed into a search box resolve to the Matrix user it belongs
+  to, in both surfaces that accept an identifier: Spotlight (via `hooks/useProfileInfo`)
+  and the invite / start-DM dialog (via `InviteDialog.updateSuggestions`). Adds
+  `src/utils/didLocalpart.ts` (the derivation + `resolveDidToUserId`) and its unit test,
+  and moves the shared `DID_PROFILE_FIELD` constant there from entry 7's hook, which now
+  re-exports it.
+- **Why we maintain it:** a DID can never *be* an MXID, so without a resolution step
+  there is no way to address a user by their key at all. Synapse 1.159.0's
+  `MXID_LOCALPART_ALLOWED_CHARACTERS` is `a-z 0-9 - / _ . = +`: no colon — and the first
+  colon in an MXID structurally ends the localpart anyway — and no uppercase, which alone
+  rules out `did:key`, whose multibase payload is case-sensitive key material. Nor can the
+  directory help: `user_directory_search` is an FTS index over **user ID and display name
+  only** (verified in the live dev schema), and custom profile fields are not in it. The
+  forward derivation is the only handle, and siwx-oidc owns it.
+- **The derivation is never trusted on its own — this is the security property.**
+  `resolveDidToUserId` derives both candidate localparts (modern hash-shaped and
+  grandfathered legacy), then reads `io.inblock.did` back off each candidate and requires
+  it to match the DID that was searched for, under the same method-aware canonicalisation
+  the account is keyed on (`did:pkh` case-folded because EIP-55 is a checksum; `did:key`
+  byte-for-byte because case is key material). This matters because the file is the
+  **third hand-maintained mirror** of siwx-oidc's `src/mxid.rs` and a previous hand-copy
+  already diverged by lowercasing everything (siwx-oidc#17). With the read-back check, a
+  drifted mirror yields **no result** — it can cost a false negative, it can never point
+  at the wrong person. `didLocalpart.test.ts` additionally pins the same vectors as
+  `mxid.rs`'s own tests, so drift fails in CI before it ships.
+- **Deliberate limits:** resolves only users on the caller's own homeserver (the
+  derivation is our provider's, not a remote server's), and only accounts that have
+  published the field — an account that has not signed in since publication started is
+  not findable, and becomes findable by itself with no migration, because siwx-oidc
+  re-asserts the field on every sign-in. Typing a DID and pressing enter in the invite
+  dialog does not convert it to a target (`convertFilter` is synchronous and resolution
+  is not); the resolved suggestion must be clicked.
+- **One upstream behaviour change beyond the DID path:** Spotlight's profile lookup is
+  gated on `filter === Filter.People`, which is right for an MXID but would hide the only
+  result a DID has, so the gate is widened by `|| looksLikeDid(trimmedQuery)`. MXIDs keep
+  upstream's behaviour exactly.
+- **Failure behaviour:** never throws. No extended-profile support, no such user, an
+  absent or malformed field, a network error — all resolve to "no result", and a DID that
+  names nobody is reported as a successful empty search, not an error.
+- **Evidence:** the live dev probe behind it — `user_directory_search` holds only
+  `@user:server` plus the display name; `MXID_LOCALPART_ALLOWED_CHARACTERS` read out of
+  the running 1.159.0; and a full round trip `did:pkh:…0x5177…` →
+  `@4pkgegvyqk1xk48d:dev.matrix.inblock.io` → the published `{did, proof}`.
+- **Upstream status:** not upstreamable as-is, for the same reason as entry 7 —
+  `io.inblock.did` and the localpart derivation are both ours.
+- **Retirement:** the `io.inblock.did` contract is retired, OR siwx-oidc grows a
+  server-side resolver endpoint (`GET /resolve?did=…`) that this can call instead of
+  mirroring the derivation, which would delete the mirror and its drift risk entirely.
+  **That is the preferred end state**; the mirror exists because no such endpoint does yet.
+- **Order:** applied AFTER entry 7 and depends on it. It moves `DID_PROFILE_FIELD` out of
+  `useAttestedDid.ts` into `utils/didLocalpart.ts` and rewrites that line into a
+  re-export, so dropping 7 or swapping the two fails the build.
+- **Coverage:** `didLocalpart.test.ts` ships inside the patch (7 vitest cases: the pinned
+  vectors, the pkh/key case rules, shape, no-DID-leak, the legacy shape, and the
+  `looksLikeDid` boundary). Verified locally against v1.12.26 with all eight patches
+  applied: 35/35 across the new file plus the existing `useProfileInfo` and `InviteDialog`
+  suites. No `e2e/element/` leg yet — like entry 7 it needs a lab account with a published
+  DID, and the two legs should be written together.
 
 ## Runtime-stage deltas (not `.patch` files, still upstream deviations)
 
