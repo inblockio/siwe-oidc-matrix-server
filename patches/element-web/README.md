@@ -363,8 +363,11 @@ A tag bump must try every patch in this file's order.
 - **What:** renders the provider-attested DID (`io.inblock.did`, MSC4133 custom profile
   field) in the TWO places Element shows an identity: directly under the MXID in the
   member-info panel, and under the Matrix ID in **All settings → Account** (the user's
-  own profile). Both use Element's own `CopyableText` affordance, carry the full value
-  in a tooltip/title, and label it `DID` or `DID (unsigned)`. Adds
+  own profile). Both use Element's own `CopyableText` affordance and label it `DID` or
+  `DID (unsigned)`. The settings row renders the DID **in full and case-sensitively** —
+  it is the user's own identity page, and a `did:key` multibase payload is key material
+  whose middle bytes an elision hides; the width-constrained member panel abbreviates it
+  and carries the full value in a tooltip/title. Adds
   `src/hooks/useAttestedDid.ts`, JSX in `UserInfoHeaderView.tsx`, an `AttestedDidBox` in
   `UserProfileSettings.tsx`, two small CSS blocks, two `en_EN.json` strings.
 - **Why both surfaces:** the member panel answers "who is *that*", the settings page
@@ -376,7 +379,9 @@ A tag bump must try every patch in this file's order.
   Leaving upstream's component untouched means a tag bump can change it freely without
   this patch fighting the change, and reusing its class names makes the row inherit the
   section's spacing and type. The only new CSS is `overflow-wrap` — a DID is roughly
-  three times an MXID's length and has no spaces.
+  three times an MXID's length and has no spaces. That rule is **load-bearing** on the
+  settings row, which shows the whole unbroken string; it would merely be defensive if
+  the value were abbreviated there.
 - **Why we maintain it:** siwx-oidc publishes each user's DID into that field and the
   homeserver refuses a write to it from anyone but the provider (see
   `patches/synapse/README.md`), but **no Element surface reads it**. Verified against

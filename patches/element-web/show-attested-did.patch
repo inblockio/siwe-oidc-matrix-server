@@ -26,16 +26,20 @@ index a8a4ef7..5fb692d 100644
              height: 20px;
          }
 diff --git a/apps/web/res/css/views/settings/_UserProfileSettings.pcss b/apps/web/res/css/views/settings/_UserProfileSettings.pcss
-index 67750b9..81d2932 100644
+index 67750b9..b10c4b3 100644
 --- a/apps/web/res/css/views/settings/_UserProfileSettings.pcss
 +++ b/apps/web/res/css/views/settings/_UserProfileSettings.pcss
-@@ -43,6 +43,15 @@ Please see LICENSE files in the repository root for full details.
+@@ -43,6 +43,19 @@ Please see LICENSE files in the repository root for full details.
          }
      }
  
 +    /* The attested DID row. Inherits the Matrix ID row's box entirely; the only
 +       thing a DID needs that an MXID does not is somewhere to break, since it is
-+       roughly three times as long and has no spaces. */
++       roughly three times as long and has no spaces.
++
++       LOAD-BEARING, not defensive: the row renders the DID in full, so without
++       this the unbroken ~60-character string overflows the box rather than
++       wrapping inside it. */
 +    .mx_UserProfileSettings_profile_controls_did {
 +        .mx_CopyableText {
 +            overflow-wrap: anywhere;
@@ -90,18 +94,18 @@ index 1e21422..3ea1028 100644
                  {!hideVerificationSection && <UserInfoHeaderVerificationView member={member} devices={devices} />}
              </Container>
 diff --git a/apps/web/src/components/views/settings/UserProfileSettings.tsx b/apps/web/src/components/views/settings/UserProfileSettings.tsx
-index d2280c3..230a052 100644
+index d2280c3..32d1bdd 100644
 --- a/apps/web/src/components/views/settings/UserProfileSettings.tsx
 +++ b/apps/web/src/components/views/settings/UserProfileSettings.tsx
 @@ -26,6 +26,7 @@ import { formatBytes } from "../../../utils/FormattingUtils";
  import InlineSpinner from "../elements/InlineSpinner";
  import UserIdentifierCustomisations from "../../../customisations/UserIdentifier";
  import CopyableText from "../elements/CopyableText";
-+import { abbreviateDid, useAttestedDid } from "../../../hooks/useAttestedDid";
++import { useAttestedDid } from "../../../hooks/useAttestedDid";
  import { useMatrixClientContext } from "../../../contexts/MatrixClientContext";
  import AccessibleButton from "../elements/AccessibleButton";
  import LogoutDialog, { shouldShowLogoutDialog } from "../dialogs/LogoutDialog";
-@@ -60,6 +61,37 @@ const UsernameBox: React.FC<UsernameBoxProps> = ({ username }) => {
+@@ -60,6 +61,43 @@ const UsernameBox: React.FC<UsernameBoxProps> = ({ username }) => {
      );
  };
  
@@ -114,6 +118,12 @@ index d2280c3..230a052 100644
 + * freely without this patch fighting the change, and reusing its class names
 + * means the row inherits the section's spacing and type with no new CSS beyond
 + * wrapping (a DID is far longer than an MXID).
++ *
++ * Shown IN FULL and case-sensitively, never abbreviated: this is the user's own
++ * identity page, and a `did:key` multibase payload is key material whose middle
++ * bytes are exactly what an elision would hide. The member info panel abbreviates
++ * the same value on purpose — that surface is width-constrained and this one is
++ * not.
 + *
 + * Renders NOTHING when the account publishes no DID — which is every account on
 + * a homeserver that does not use this provider. See `useAttestedDid`: the value
@@ -129,8 +139,8 @@ index d2280c3..230a052 100644
 +            <div className="mx_UserProfileSettings_profile_controls_userId_label" id={labelId}>
 +                {attested.signed ? _t("user_info|did_label") : _t("user_info|did_label_unsigned")}
 +            </div>
-+            <CopyableText getTextToCopy={() => attested.did} aria-labelledby={labelId} title={attested.did}>
-+                {abbreviateDid(attested.did)}
++            <CopyableText getTextToCopy={() => attested.did} aria-labelledby={labelId}>
++                {attested.did}
 +            </CopyableText>
 +        </div>
 +    );
@@ -139,7 +149,7 @@ index d2280c3..230a052 100644
  interface ManageAccountButtonProps {
      externalAccountManagementUrl: string;
  }
-@@ -254,6 +286,7 @@ const UserProfileSettings: React.FC<UserProfileSettingsProps> = ({
+@@ -254,6 +292,7 @@ const UserProfileSettings: React.FC<UserProfileSettingsProps> = ({
                      </Alert>
                  )}
                  {userIdentifier && <UsernameBox username={userIdentifier} />}
