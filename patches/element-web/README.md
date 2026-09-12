@@ -372,14 +372,35 @@ A tag bump must try every patch in this file's order.
   tree with patches 1–5 already applied, so the `en_EN.json` context stays
   correct for sixth-in-order application. The added/removed lines are
   **byte-identical** to the PR's own net diff; only context and hunk offsets
-  differ. Ten files now instead of five, `+4142/-1`, patch 4265 lines
-  (was 1412). The one real base difference is `apps/web/src/settings/Settings.tsx`:
+  differ. Ten files now instead of five, `+4167/-1`, patch 4290 lines
+  (was 1412; the 2026-09-12 export was `+4142/-1` / 4265 lines, before the
+  2026-09-13 resync below). The one real base difference is `apps/web/src/settings/Settings.tsx`:
   `develop` has dropped `feature_custom_themes` and `LabGroup.Themes`, which
   v1.12.26 still has, three lines from our insertion point. Resolved by a
   3-way apply against the PR's own pre-image blob, not by hand-editing hunk
   headers; `en_EN.json` and `docs/labs.md` differ only by offset, and
   `WebPlatform.ts`, `WebPlatform.test.ts`, `playwright/global.d.ts` and
   `AUTHORS.rst` are identical at the tag and on `develop`.
+- **Re-synced to the pushed PR head `db54789c08`, 2026-09-13.** The 2026-09-12
+  export was taken from the PR checkout's *uncommitted working tree*; that work
+  was then committed and pushed as `2aeafdd443` + `db54789c08` on
+  `inblockio:feat/web-event-index`, and one file moved in between. Re-derived
+  from the pushed head (`git diff d06fc35ab2^2 db54789c08`, i.e. against the
+  `develop` commit the branch last merged) onto a pristine v1.12.26 tree with
+  patches 1-5 applied, exported with `git diff HEAD`. **Nine of the ten files
+  are byte-identical to the previous export**; the only change is
+  `apps/web/playwright/e2e/crypto/web-event-index.spec.ts`, 146 -> 171 added
+  lines. That file is a Playwright spec and is **not** part of the built
+  webapp, so the shipped artifact is unchanged by this resync; it is done
+  because rule 3 requires the vendored patch and the PR to stay in sync, not
+  because the deployment behaviour moved. The spec's substantive change: the
+  reload test now signs in through the UI (`logIntoElement`) instead of taking
+  the `user` fixture, because that fixture writes `mx_has_pickle_key: "false"`
+  and an index in a session with no pickle key is memory-only by design, so the
+  old form asserted persistence against a deliberately-disabled path; plus
+  `test.slow()` for the 30s `searchUntilFound` poll. Verified: all eight
+  patches still apply in Dockerfile order to a pristine v1.12.26 tree, and
+  `node --test scripts/browser-eventindex-invariants.mjs` is 12/12.
 - **Upstream status: FILED AND ACTIVELY TRACKED — we are trying to get this
   merged.** [element-hq/element-web#34718](https://github.com/element-hq/element-web/pull/34718)
   "Add a browser EventIndex so encrypted-room search works on the web"

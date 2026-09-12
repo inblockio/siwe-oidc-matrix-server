@@ -11,10 +11,10 @@ index a3f3be6..1060f39 100644
 +  Browser EventIndex for encrypted-room search on Element Web
 diff --git a/apps/web/playwright/e2e/crypto/web-event-index.spec.ts b/apps/web/playwright/e2e/crypto/web-event-index.spec.ts
 new file mode 100644
-index 0000000..aac1c64
+index 0000000..c1d22bc
 --- /dev/null
 +++ b/apps/web/playwright/e2e/crypto/web-event-index.spec.ts
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,171 @@
 +/*
 +Copyright 2026 inblock.io
 +
@@ -27,7 +27,7 @@ index 0000000..aac1c64
 +
 +import { expect, test } from "../../element-web-test";
 +import { type ElementAppPage } from "../../pages/ElementAppPage";
-+import { sendMessageInCurrentRoom } from "./utils";
++import { logIntoElement, sendMessageInCurrentRoom } from "./utils";
 +
 +/**
 + * The room info panel's search box: the only entry point to searching a single room, and the one
@@ -62,6 +62,9 @@ index 0000000..aac1c64
 +        await expect(searchResultsPanel(page).getByText(expected)).toBeVisible({ timeout: 2000 });
 +    }).toPass({ timeout: 30000, intervals: [1000] });
 +}
++
++/** The display name the user in this file registers under; asserted after the UI login below. */
++const DISPLAY_NAME = "Alice";
 +
 +/** A term no other test, message or piece of chrome can contain. */
 +const uniqueTerm = (): string => `ewsearch${Date.now()}${Math.floor(Math.random() * 1e6)}`;
@@ -112,9 +115,14 @@ index 0000000..aac1c64
 +
 +test.describe("Browser EventIndex", () => {
 +    test.use({
-+        displayName: "Alice",
++        displayName: DISPLAY_NAME,
 +        labsFlags: ["feature_web_event_index"],
 +    });
++
++    // `searchUntilFound` is allowed to poll for 30s on its own, which is the whole of the default
++    // per-test timeout, so a test that actually had to wait out an indexing delay would fail on the
++    // clock rather than on the thing it asserts. Triple the budget so the wait it declares is real.
++    test.slow();
 +
 +    test("finds a message in an encrypted room through the search UI", async ({ page, app, user }) => {
 +        await rejectToast(page, "Verify this device");
@@ -144,14 +152,31 @@ index 0000000..aac1c64
 +        await expect(searchResultsPanel(page).getByText(body)).toHaveCount(0);
 +    });
 +
-+    test("still finds an indexed message after a page reload", async ({ page, app, user }) => {
-+        await rejectToast(page, "Verify this device");
++    /**
++     * This test logs in through the UI rather than taking the `user` fixture, and that is load
++     * bearing rather than stylistic: the records are encrypted at rest under a key derived from the
++     * session's pickle key, so an index in a session that has no pickle key is memory-only by
++     * design and *nothing* of it can survive a reload. The `user` fixture writes credentials
++     * straight into localStorage with `mx_has_pickle_key: "false"` and never creates one, so on that
++     * path this test would assert against a feature that is deliberately switched off. Signing in is
++     * what creates the pickle key, so this takes the slower route an actual user takes.
++     *
++     * Nor does the crawler paper over it: after a reload `EventIndex.addInitialCheckpoints` finds no
++     * back-pagination token on the restored live timeline, so it enrols no rooms and the index of a
++     * reloaded pickle-key-less session simply stays empty.
++     */
++    test("still finds an indexed message after a page reload", async ({ page, app, credentials }) => {
++        await logIntoElement(page, credentials);
++        await expect(page.getByText(`Welcome ${DISPLAY_NAME}`, { exact: true })).toBeVisible();
++        // Unlike the fixture's pre-seeded session, a device that has just signed in and has no
++        // siblings is not always asked to verify, so this toast may never appear.
++        await rejectToastIfExists(page, "Verify this device");
++
 +        const { body, term } = await seedEncryptedRoom(page, app);
 +        await searchUntilFound(page, term, body);
 +
-+        // The index is rebuilt from the encrypted records in IndexedDB on the way back up. The
-+        // crawler would eventually re-index the room from the server too, so this asserts that
-+        // the term is findable after a reload rather than that no re-crawl happened.
++        // The records are read back out of IndexedDB and decrypted on the way up, and the crawler
++        // checkpoints come back with them.
 +        await page.reload();
 +        await rejectToastIfExists(page, "Verify this device");
 +        await expect(page.getByText(body)).toBeVisible();
