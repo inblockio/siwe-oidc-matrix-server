@@ -408,9 +408,162 @@ dev.siwx.inblock.io {
     # breaking OIDC discovery/token calls. See siwx-oidc/CLAUDE.md "CORS rule"
     # and Caddyfile.production / Caddyfile.local (strip_upstream_cors).
     handle {
+        # -------------------------------------------------------------
+        # EDGE RATE LIMIT for the PUBLIC, UNAUTHENTICATED GET /resolve.
+        #
+        # WHY HERE AND NOT IN THE SERVICE: siwx-oidc's own module doc
+        # (src/resolve.rs) delegates this deliberately — "a rate limiter
+        # belongs at the reverse proxy that already fronts this service
+        # (Caddy), where it can be shaped per-deployment without a
+        # release. Do not add an in-process one here". Until now only
+        # half of that contract existed: NO rate-limiting directive of
+        # any kind was present in this file or Caddyfile.production, so
+        # the delegation pointed at nothing. `rate_limit` is not stock
+        # Caddy — it comes from caddy-ratelimit, pinned in
+        # dockerfiles/Dockerfile.caddy-l4 next to caddy-l4. A Caddy
+        # without it REFUSES TO PARSE this block, so the image must be
+        # rebuilt and pulled BEFORE this config is reloaded.
+        #
+        # WHY /resolve SPECIFICALLY, and nothing else on this vhost:
+        # /resolve is the only route here that is unauthenticated AND
+        # costs upstream work — up to two Synapse probes per request
+        # (localpart availability + the io.inblock.did profile read).
+        # Everything else on dev.siwx.inblock.io is the login path:
+        # OIDC discovery, /jwk, /authorize, /token, the WebAuthn
+        # ceremonies. Those are bursty by nature (one interactive login
+        # is a rapid volley of them, and Element/Element X retry), and
+        # throttling them breaks sign-in for a real user long before it
+        # inconveniences an abuser. So the limiter is scoped by a ZONE
+        # MATCHER rather than by a `handle /resolve` block of its own —
+        # see the CORS note below for why that distinction is not
+        # cosmetic.
+        #
+        # SCOPING MECHANISM — and why NOT `handle /resolve { ... }`:
+        # `handle` blocks are mutually exclusive. A separate
+        # `handle /resolve` would take /resolve OUT of the catch-all
+        # below and therefore out of `import strip_upstream_cors`, and
+        # /resolve is called cross-origin by browser consumers, so that
+        # is precisely the route that must keep the strip. Falsified on
+        # this box against the real module: with a separate handle that
+        # omitted the import, one response carried BOTH
+        #   Access-Control-Allow-Origin: *
+        #   Access-Control-Allow-Origin: https://upstream.example
+        # i.e. exactly the dual-ACAO failure siwx-oidc/CLAUDE.md's CORS
+        # rule exists to prevent. Keeping the limiter INSIDE this handle
+        # makes that mistake unreachable: there is still exactly one
+        # reverse_proxy for this vhost and it still carries the strip.
+        #
+        # METHOD MATCH: only GET/HEAD reach Synapse (the route is
+        # registered `get(resolve_handler)`), so only GET/HEAD are
+        # counted. This also leaves a CORS preflight free: verified on
+        # the real module that an OPTIONS to /resolve inside a handle
+        # block is NOT answered by the site-level `respond
+        # @cors_preflight 204` (a `handle` outranks it), so without this
+        # matcher a preflight would burn budget for a request that costs
+        # the homeserver nothing.
+        #
+        # THE NUMBERS (two zones, both per client IP; tune these two
+        # `events` values and nothing else):
+        #   burst     60 / 10s  = 6 req/s instantaneous ceiling. Stops a
+        #                         thundering herd from landing on a
+        #                         SQLite-backed Synapse all at once,
+        #                         while a legitimate directory walk over
+        #                         a room's members still runs at 6/s.
+        #   sustained 600 / 5m  = 2 req/s average, i.e. <= 4 Synapse
+        #                         probes/s from one address, forever.
+        #                         600 lookups up front is a whole room's
+        #                         membership in one go before anything
+        #                         throttles.
+        # One zone cannot express both: a single window either kills the
+        # legitimate loop or lets an abuser sustain it indefinitely.
+        # Generous on purpose — this bounds abuse, it is not an access
+        # control. /resolve answers only what a caller could already
+        # compute offline (DID -> localpart is pure sha2) or fetch from
+        # Synapse's unauthenticated, federating profile route.
+        #
+        # KEY = {remote_host}, the transport peer, NEVER a forwarded
+        # header. Caddy is the outermost hop on this box (DNS:
+        # dev.siwx.inblock.io -> 207.154.209.103, no CDN in front, and
+        # no `trusted_proxies` is configured anywhere in this repo), so
+        # {remote_host} IS the client address. Keying on
+        # X-Forwarded-For here would be a spoofable limiter, i.e. no
+        # limiter at all. `{client_ip}` would resolve to the same value
+        # today (it falls back to the peer when no proxy is trusted) but
+        # would silently start honouring a client-supplied header the
+        # day someone adds `trusted_proxies`.
+        #
+        # COST OF THE NUMBERS, stated honestly: caddy-ratelimit allocates
+        # one ring buffer per zone per key, `ring []time.Time` with
+        # len == events (ringbuffer.go), so 24 B * (60 + 600) ~= 16 KB of
+        # RAM per distinct client IP, held until the sweeper reaps an
+        # idle limiter (sweep_interval default 1m; idle means older than
+        # the zone window, so up to 5m here). 10k distinct addresses in
+        # one window is therefore ~160 MB. Spoofed sources cannot do this
+        # (a request needs a completed TCP handshake), so it takes a real
+        # botnet — but if that is the threat, LOWER the sustained
+        # `events` first: it is the term that dominates, and halving it
+        # halves the footprint. Do not reach for ipv4_prefix to fix it;
+        # that buckets everyone behind one CGNAT together.
+        #
+        # ipv6_prefix 64 buckets an IPv6 client by its /64 so it cannot
+        # walk its own prefix for a fresh budget. Inert today (no AAAA
+        # record exists for this host), load-bearing the day one is
+        # added. NOTE it is silently ignored by caddy-ratelimit v0.1.0 —
+        # one of the reasons Dockerfile.caddy-l4 pins a later commit.
+        # ipv4_prefix is deliberately left unset: bucketing IPv4 by
+        # subnet would punish everyone behind one CGNAT together.
+        rate_limit {
+            zone siwx_resolve_burst {
+                match {
+                    path   /resolve
+                    method GET HEAD
+                }
+                key         {remote_host}
+                events      60
+                window      10s
+                ipv6_prefix 64
+            }
+            zone siwx_resolve_sustained {
+                match {
+                    path   /resolve
+                    method GET HEAD
+                }
+                key         {remote_host}
+                events      600
+                window      5m
+                ipv6_prefix 64
+            }
+        }
+
         reverse_proxy siwx-oidc:8081 {
             import strip_upstream_cors
         }
+    }
+
+    # The limiter's own 429 has an EMPTY body by default (verified: the
+    # module returns an internal HTTP 429 and Caddy's default error
+    # response writes no body, only `Retry-After`). Every other error a
+    # /resolve caller can see is JSON — `{"error":…,"message":…}`, the
+    # shape src/resolve.rs's ResolveError renders for 400/502/503 — so a
+    # bare 429 would be the one response on that endpoint a JSON client
+    # cannot parse. This restores the family without touching the
+    # service.
+    #
+    # `handle_errors 429` is STATUS-FILTERED on purpose: an unfiltered
+    # handle_errors would also swallow this vhost's 502s (dead upstream)
+    # and report them as a rate limit. Verified on the real module: a
+    # 502 from a dead upstream still renders Caddy's default error,
+    # untouched, while the 429 gets this body.
+    #
+    # The CORS headers survive: the site-level `import public_cors`
+    # above applies to this error response too (verified — the 429
+    # carries a single `Access-Control-Allow-Origin: *`), and
+    # `Retry-After` set by the limiter is preserved through the error
+    # route. A browser consumer therefore READS the 429 instead of
+    # seeing an opaque CORS failure.
+    handle_errors 429 {
+        header Content-Type "application/json"
+        respond `{"error":"rate_limited","message":"Too many requests to /resolve from this address. Retry after the interval in the Retry-After header."}` 429
     }
 }
 

@@ -203,12 +203,84 @@ siwx-oidc.inblock.io {
     }
 
     handle {
+        # EDGE RATE LIMIT for the public, unauthenticated GET /resolve.
+        # Prod twin of the block in Caddyfile.dev-aquafire; the full
+        # reasoning (why the edge and not the service, why the zone
+        # matcher instead of a `handle /resolve` block, why {remote_host}
+        # and not a forwarded header, where the numbers come from) is
+        # written out once, there. Summary of what must not drift:
+        #
+        #   * `rate_limit` is NOT stock Caddy. It comes from
+        #     caddy-ratelimit, pinned beside caddy-l4 in
+        #     dockerfiles/Dockerfile.caddy-l4. The portal Caddy must be
+        #     running that image BEFORE this file is applied, or the
+        #     whole edge fails to parse its config — and this edge fronts
+        #     every prod vhost, not just this one. Image first, config
+        #     second.
+        #   * The limiter sits INSIDE this catch-all handle so /resolve
+        #     keeps the four `header_down` lines below. A
+        #     `handle /resolve` block of its own would route around them
+        #     and hand browsers two Access-Control-Allow-Origin headers
+        #     on exactly the endpoint that is called cross-origin.
+        #   * Only GET/HEAD are counted (the route is GET-only upstream);
+        #     an OPTIONS preflight is already answered by the @options
+        #     handle above and never reaches the limiter.
+        #
+        # Prod-specific note: this vhost's ACAO is pinned to
+        # https://element.inblock.io, so a third-party browser consumer
+        # cannot read /resolve here at all today (dev serves `*`). That
+        # is an existing, deliberate prod posture — not something this
+        # limiter changes — but it means the 429 body below is mostly
+        # for non-browser callers here.
+        #
+        # Tune these two `events` values and nothing else:
+        #   burst     60 / 10s = 6 req/s ceiling (no thundering herd)
+        #   sustained 600 / 5m = 2 req/s average, <= 4 Synapse probes/s
+        # Each distinct client IP costs ~16 KB of RAM while it is active
+        # (one `[]time.Time` ring of len == events per zone); the
+        # sustained zone dominates that, so it is the number to lower if
+        # a botnet-scale spray is ever the concern. Full reasoning in
+        # Caddyfile.dev-aquafire.
+        rate_limit {
+            zone siwx_resolve_burst {
+                match {
+                    path   /resolve
+                    method GET HEAD
+                }
+                key         {remote_host}
+                events      60
+                window      10s
+                ipv6_prefix 64
+            }
+            zone siwx_resolve_sustained {
+                match {
+                    path   /resolve
+                    method GET HEAD
+                }
+                key         {remote_host}
+                events      600
+                window      5m
+                ipv6_prefix 64
+            }
+        }
+
         reverse_proxy siwx-oidc:8081 {
             header_down -Access-Control-Allow-Origin
             header_down -Access-Control-Allow-Methods
             header_down -Access-Control-Allow-Headers
             header_down -Vary
         }
+    }
+
+    # The limiter's 429 has an empty body by default; every other error a
+    # /resolve caller can see is JSON (`{"error":…,"message":…}`, from
+    # siwx-oidc's ResolveError). Status-filtered on purpose so this vhost's
+    # 502s keep Caddy's default error handling instead of being reported as
+    # a rate limit. Retry-After and the site-level CORS headers survive into
+    # this response (verified against the real module).
+    handle_errors 429 {
+        header Content-Type "application/json"
+        respond `{"error":"rate_limited","message":"Too many requests to /resolve from this address. Retry after the interval in the Retry-After header."}` 429
     }
 }
 

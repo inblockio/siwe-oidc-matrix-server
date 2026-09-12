@@ -206,38 +206,176 @@ apply_mas_config() {
   yq -i ".matrix_authentication_service.secret = \"${MAS_SHARED_SECRET}\"" /data/homeserver.yaml
 }
 
+# -----------------------------------------------------------------------------
+# THE DID PROFILE FIELD — a THREE-SIDED wire contract whose sides are deployed
+# independently and fail APART, silently:
+#
+#   provider    siwx-oidc          src/did_assertion.rs::DID_PROFILE_FIELD
+#   consumer    siwx-oidc-auth     src/did_assertion.rs::DID_PROFILE_FIELD
+#   homeserver  THIS denylist entry
+#
+# Overridable for a deployment that renames it, but all three move TOGETHER:
+# changing it on one side alone silently unprotects the live field. Hoisted to a
+# script-level export (it used to be a one-shot prefix assignment on the `yq`
+# line) because the verification, the failure banner and the write all have to
+# name the same string, and `strenv()` needs it exported anyway.
+# -----------------------------------------------------------------------------
+SIWX_DID_PROFILE_FIELD="${SIWX_DID_PROFILE_FIELD:-io.inblock.did}"
+export SIWX_DID_PROFILE_FIELD
+
+# The ONE place the "what / what it means / what to do" text lives, so the hard
+# fail and the SIWX_ALLOW_UNPROTECTED_DID_FIELD warn-mode downgrade can never
+# drift apart into two different descriptions of the same hole. $1 is the one
+# line that differs: the specific defect detected.
+did_field_unprotected_banner() {
+  echo "" >&2
+  echo "################################################################################" >&2
+  echo "##  DID PROFILE FIELD '${SIWX_DID_PROFILE_FIELD}' IS NOT PROTECTED" >&2
+  echo "##" >&2
+  echo "##  WHAT:  $1" >&2
+  echo "##" >&2
+  echo "##  MEANS: '${SIWX_DID_PROFILE_FIELD}' is then an ordinary, USER-WRITABLE" >&2
+  echo "##         MSC4133 custom profile field. Stock Synapse authorizes a custom-" >&2
+  echo "##         field write with an ownership check and NOTHING else (1.159.0" >&2
+  echo "##         handlers/profile.py:700-704 — no value validation anywhere in the" >&2
+  echo "##         path), so ANY user can overwrite their OWN copy of this field with" >&2
+  echo "##         SOMEONE ELSE'S DID and misrepresent their cryptographic identity to" >&2
+  echo "##         every client and every federating server that reads it — the field" >&2
+  echo "##         is world-readable by default (config/server.py:561," >&2
+  echo "##         require_auth_for_profile_requests = False) and federates via" >&2
+  echo "##         handlers/profile.py::on_profile_query. siwx-oidc's ES256 assertion" >&2
+  echo "##         makes such tampering DETECTABLE; only this denylist makes it" >&2
+  echo "##         IMPOSSIBLE." >&2
+  echo "##" >&2
+  echo "##  DO:    run the PATCHED Synapse image this repo builds — dockerfiles/" >&2
+  echo "##         Dockerfile applies patches/synapse/msc4133-profile-field-write-" >&2
+  echo "##         policy.patch (element-hq/synapse#19980) and FAILS THE BUILD if it" >&2
+  echo "##         stops applying. Production pins that image by DIGEST and promotion" >&2
+  echo "##         is a human editing .env, so the usual cause is a digest that" >&2
+  echo "##         predates the patch, or one that points at a stock" >&2
+  echo "##         matrixdotorg/synapse. Full registry: patches/synapse/README.md." >&2
+  echo "################################################################################" >&2
+  echo "" >&2
+}
+
+# Can the Synapse in THIS container actually enforce the denylist?
+#
+# The build-time guarantee is real, but it is not THIS guarantee. `patch
+# --forward --batch --fuzz=0` failing the image build protects the image we
+# BUILD; it says nothing about the image a deployment actually PINNED. Prod runs
+# a digest chosen by hand in .env, so "accidentally running a stock Synapse" is a
+# realistic deploy mistake rather than a hypothetical — and it is the worst kind,
+# because on stock Synapse `msc4133_key_denylist` is simply an unknown
+# `experimental_features` entry that is silently IGNORED. The write below still
+# succeeds, the config still LOOKS right, and every user's provider-asserted DID
+# is user-writable with ZERO signal anywhere. (The previous version of this
+# function's comment noted that "it does not gate startup" as a safety property.
+# That was exactly backwards: it is the hole.)
+#
+# Probed by SOURCE MARKER, not by a live 403: this runs before Synapse is
+# listening, and a live probe would need a user access token we do not have here.
+#
+# TWO markers, and both are the CONFIG KEY NAME, because they are the two
+# independent halves of "this config has any effect at all":
+#   config/experimental.py  — the key we write is PARSED (not silently ignored)
+#   handlers/profile.py     — the parsed key is READ on the profile write path
+# Deliberately NOT the patch's private helper `_is_profile_field_disallowed`
+# (verified to discriminate correctly on 2026-09-13, patched vs stock): it is an
+# internal name upstream may rename at will, whereas patches/synapse/README.md
+# keeps the upstream CONFIG key names verbatim precisely so that adopting the
+# merged PR is a no-op for this config. And a rename of the config key would
+# break the `yq` write below anyway, so it MUST fail here rather than pass.
+#
+# The package directory is resolved via `import synapse` rather than hard-coded
+# as python3.13/site-packages, for the same reason dockerfiles/Dockerfile does:
+# a base image that bumps its Python would otherwise make this probe read
+# "absent" (fail-closed, but for the wrong reason) or, worse, miss the file.
+synapse_enforces_did_field_denylist() {
+  local pkg
+  pkg="$(python3 -c 'import synapse, os; print(os.path.dirname(synapse.__file__))' 2>/dev/null)"
+  [ -n "${pkg}" ] || return 1
+  grep -q 'msc4133_key_denylist' "${pkg}/config/experimental.py" 2>/dev/null || return 1
+  grep -q 'msc4133_key_denylist' "${pkg}/handlers/profile.py"    2>/dev/null || return 1
+  return 0
+}
+
+# Re-read what is ACTUALLY ON DISK. "`yq -i` was invoked" and "/data/homeserver.yaml
+# contains the value" are different facts and only the second one protects anyone:
+# this script runs without `set -e`, so a failed write is otherwise a no-op that
+# startup sails straight past.
+#
+# `grep -Fxq` rather than a `yq ... | contains(...)` expression: the field name is
+# full of dots, F makes it a fixed string and x anchors the whole line, so no part
+# of the value can be re-interpreted as a pattern or a yq path.
+did_field_denylist_on_disk_contains_field() {
+  [ -f /data/homeserver.yaml ] || return 1
+  yq '.experimental_features.msc4133_key_denylist // [] | .[]' /data/homeserver.yaml 2>/dev/null \
+    | grep -Fxq "${SIWX_DID_PROFILE_FIELD}"
+}
+
 apply_did_field_protection() {
   # Make the provider-asserted DID profile field immutable to the user.
   #
   # siwx-oidc publishes each user's DID into their MSC4133 profile under
   # `io.inblock.did`, signed with the provider's ES256 key. On stock Synapse
   # that field is freely user-writable with no value validation
-  # (handlers/profile.py:700-704 checks ownership and nothing else), so any user
-  # could overwrite their own copy with SOMEONE ELSE'S DID and misrepresent
-  # their cryptographic identity to every client and every federating server
-  # that reads it. The signature makes that detectable; this denylist makes it
-  # impossible.
+  # (handlers/profile.py:700-704 checks ownership and nothing else) — see the
+  # banner above for the full consequence. The signature makes tampering
+  # detectable; this denylist makes it impossible.
   #
   # Requires the vendored patch dockerfiles/Dockerfile applies —
   # patches/synapse/msc4133-profile-field-write-policy.patch, a backport of
-  # element-hq/synapse#19980. On an UNPATCHED Synapse this key is simply an
-  # unknown experimental_features entry and is ignored, so writing it here is
-  # safe either way; it does not gate startup.
+  # element-hq/synapse#19980 — and, since 2026-09-13, VERIFIES that it is
+  # present rather than assuming it.
   #
   # DENYLIST, never msc4133_key_allowlist: the allowlist is a hard whitelist
   # over EVERY custom profile field on the homeserver, which would forbid every
   # other field our users might ever set. Upstream's key name is used verbatim
   # so that adopting the merged PR is a no-op for this config.
-  #
+
+  # The field name must satisfy Synapse's Common Namespaced Identifier Grammar
+  # (1.159.0 util/stringutils.py:53, enforced by is_namedspaced_grammar() at
+  # rest/client/profile.py:138/179/240 on EVERY custom-field GET/PUT/DELETE).
+  # A name that fails it is unreachable on the C-S API for everybody — including
+  # siwx-oidc's own admin PUT — so a denylist carrying one is inert and the whole
+  # feature is silently off. Hard fail with NO escape hatch: this is a typo in
+  # our own configuration, never a deployment shape anyone deliberately chooses.
+  if [[ ! "${SIWX_DID_PROFILE_FIELD}" =~ ^[a-z][a-z0-9_.-]{0,254}$ ]]; then
+    did_field_unprotected_banner "SIWX_DID_PROFILE_FIELD='${SIWX_DID_PROFILE_FIELD}' violates Synapse's Common Namespaced Identifier Grammar ^[a-z][a-z0-9_.-]{0,254}\$, so no such profile field can exist and the denylist entry would protect nothing."
+    echo "REFUSING TO START: this is a typo in our own configuration, not a deployment shape; there is no override." >&2
+    exit 1
+  fi
+
   # `yq` is given the field name as a strenv() so the dots in "io.inblock.did"
   # are never parsed as a yq path expression.
-  # The field name is a WIRE CONTRACT shared with siwx-oidc (its own
-  # `did_assertion::DID_PROFILE_FIELD`) and with the siwx-oidc-auth verifier.
-  # Overridable for a deployment that renames it, but both sides must agree —
-  # changing it on one side alone silently unprotects the live field.
-  SIWX_DID_PROFILE_FIELD="${SIWX_DID_PROFILE_FIELD:-io.inblock.did}" \
-    yq -i '.experimental_features.msc4133_key_denylist = [strenv(SIWX_DID_PROFILE_FIELD)]' \
-      /data/homeserver.yaml
+  if ! yq -i '.experimental_features.msc4133_key_denylist = [strenv(SIWX_DID_PROFILE_FIELD)]' \
+        /data/homeserver.yaml; then
+    did_field_unprotected_banner "the yq write of experimental_features.msc4133_key_denylist into /data/homeserver.yaml FAILED (yq exited non-zero — unwritable file, malformed YAML, or no yq)."
+    echo "REFUSING TO START: a config write that silently did not happen must not become a running server." >&2
+    exit 1
+  fi
+
+  # THE GATE. Default is a hard fail, deliberately: a homeserver that publishes
+  # provider-signed DID assertions into a field any user can overwrite is worse
+  # than a homeserver that refuses to start. The first is a silent identity
+  # forgery surface that nobody will notice; the second is an outage somebody
+  # fixes in ten minutes.
+  if synapse_enforces_did_field_denylist; then
+    echo "DID field protection: '${SIWX_DID_PROFILE_FIELD}' denylisted, and this Synapse carries the MSC4133 write-ACL patch (msc4133_key_denylist parsed in config/experimental.py and read in handlers/profile.py)."
+  elif [ "${SIWX_ALLOW_UNPROTECTED_DID_FIELD:-}" = "1" ]; then
+    # Escape hatch, named so that nobody sets it without understanding it. It
+    # downgrades ONLY this check — an operator may deliberately run a stock
+    # Synapse (a version-bump dry run, a bisect, a standalone deployment that
+    # publishes no DIDs). It does NOT downgrade the write verification: a config
+    # write that did not land is never an intended deployment shape.
+    SIWX_DID_FIELD_UNPROTECTED_WARN=1
+    did_field_unprotected_banner "this Synapse does NOT carry the MSC4133 write-ACL patch — 'msc4133_key_denylist' is an unknown experimental_features key here and Synapse IGNORES it."
+    echo "WARNING: SIWX_ALLOW_UNPROTECTED_DID_FIELD=1 is set — starting anyway, with the field UNPROTECTED. You are accepting everything above." >&2
+  else
+    did_field_unprotected_banner "this Synapse does NOT carry the MSC4133 write-ACL patch — 'msc4133_key_denylist' is an unknown experimental_features key here and Synapse IGNORES it."
+    echo "REFUSING TO START. Set SIWX_ALLOW_UNPROTECTED_DID_FIELD=1 to start anyway (you are then accepting everything above)." >&2
+    exit 1
+  fi
 }
 
 apply_matrixrtc_config() {
@@ -269,6 +407,12 @@ apply_matrixrtc_config() {
 if [ -f /data/homeserver.yaml ]; then
   apply_mas_config
   apply_matrixrtc_config
+  # KEEP LAST among the apply_* functions. apply_mas_config deletes
+  # .experimental_features.msc3861 and apply_matrixrtc_config writes four
+  # .experimental_features.* keys; running the denylist write after both means a
+  # clobber by either is impossible by construction. This is belt; the braces are
+  # the final on-disk re-read immediately before /start.py, which makes the
+  # guarantee independent of this ordering if a future apply_* is appended here.
   apply_did_field_protection
 else
   # /start.py generate above should have created this; if it somehow didn't,
@@ -306,6 +450,37 @@ except Exception as e:
     print(f'Admin promotion error: {e}')
 PYEOF
   fi
+fi
+
+# -----------------------------------------------------------------------------
+# LAST GATE, at the last possible moment before Synapse takes over the process.
+#
+# apply_did_field_protection() verified its own `yq` exit status; this verifies
+# the FILE, after every other apply_* has had its turn at it. Those are different
+# claims: "the write command succeeded" does not survive a later function
+# replacing the key, the map, or the whole file, and this script deliberately
+# runs without `set -e`, so nothing else would notice.
+#
+# Skipped when /data/homeserver.yaml is absent, on purpose: that path is already
+# owned by the WARNING above plus /start.py's own explicit "Config file does not
+# exist" error, and stealing it would replace a precise diagnosis with a vaguer
+# one. (`/start.py` with no args is run-mode and never rewrites the config —
+# verified against v1.159.0's start.py, which only generates in `generate` /
+# `migrate_config` modes — so there is no post-gate write to worry about.)
+# -----------------------------------------------------------------------------
+if [ -f /data/homeserver.yaml ]; then
+  if ! did_field_denylist_on_disk_contains_field; then
+    did_field_unprotected_banner "/data/homeserver.yaml does NOT contain '${SIWX_DID_PROFILE_FIELD}' in experimental_features.msc4133_key_denylist at startup — the write never landed, or something later in this entrypoint clobbered it."
+    echo "REFUSING TO START: a config write that silently did not happen must not become a running server." >&2
+    exit 1
+  fi
+fi
+
+# Repeat the warning here so it is the LAST thing in the log before Synapse's own
+# (very noisy) startup output, rather than something that scrolled away minutes
+# ago. An unprotected DID field is a standing condition, not a startup event.
+if [ "${SIWX_DID_FIELD_UNPROTECTED_WARN:-}" = "1" ]; then
+  did_field_unprotected_banner "STARTING WITH THE FIELD UNPROTECTED because SIWX_ALLOW_UNPROTECTED_DID_FIELD=1 was set. This Synapse does not carry the MSC4133 write-ACL patch."
 fi
 
 /start.py

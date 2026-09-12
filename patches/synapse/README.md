@@ -157,6 +157,42 @@ the local e2e harness): a user token's PUT and DELETE of `io.inblock.did` each a
 403 `M_FORBIDDEN`, while siwx-oidc's minted admin token still writes it successfully,
 and an unprotected control field remains user-writable.
 
+### Startup enforcement (added 2026-09-13)
+
+Writing `msc4133_key_denylist` proves nothing on its own: on an **unpatched**
+Synapse it is an unknown `experimental_features` key that Synapse silently
+ignores, so the DID profile field stays user-writable with no signal anywhere.
+`entrypoints/matrix_server.sh` therefore gates startup on three separate facts,
+and refuses to start if any fails:
+
+1. the field name satisfies Synapse's Common Namespaced Identifier Grammar (a
+   name with a colon or uppercase is unreachable for *everyone*, including
+   siwx-oidc's own admin PUT, which would make the denylist inert);
+2. the `yq` write succeeded **and** the value is actually on disk at startup —
+   re-read as the last step before `/start.py`, after every other `apply_*`
+   function has had its turn, because this script runs without `set -e`;
+3. the Synapse about to run genuinely enforces the key — probed by grepping
+   `msc4133_key_denylist` in **both** `config/experimental.py` and
+   `handlers/profile.py`, the two independent halves of "the key is parsed" and
+   "the parsed key is read on the write path". The upstream *config key names*
+   are the thing this repo commits to keeping verbatim, which is why the probe
+   keys on them rather than on a private helper upstream may rename.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SIWX_DID_PROFILE_FIELD` | `io.inblock.did` | The protected field name. A **three-sided wire contract** — it must match siwx-oidc's `did_assertion::DID_PROFILE_FIELD` and the `siwx-oidc-auth` verifier. Changing it on one side alone silently unprotects the live field. |
+| `SIWX_ALLOW_UNPROTECTED_DID_FIELD` | unset | Set to `1` to start anyway when the patch is **absent**. Downgrades that one check to a banner printed twice — once at detection and once immediately before `/start.py`, so it is the last thing in the log rather than something that scrolled away. It does **not** downgrade checks 1 or 2: a config write that did not land, or a field name that cannot be addressed, is never an intended deployment shape. |
+
+Covered by `scripts/did-field-guard-accept.sh` (7 cases, 30 assertions), which
+falsifies each gate rather than only exercising the happy path — including a `yq`
+that exits 0 while writing the wrong value, which an exit-status check cannot see.
+
+**Why a hard default is safe here:** this entrypoint is `COPY`'d into the same
+image whose build applies the patch with `--fuzz=0`, so a build that loses the
+patch produces no image at all. An image carrying the guard necessarily carries
+the patched Synapse. The only way to pair the two is to bind-mount the entrypoint
+into a stock image, which is exactly what the acceptance script does on purpose.
+
 **Retirement condition.** #19980 (or a successor implementing issue #18525) merges
 and ships in a Synapse release we have adopted, with the guard still exempting
 `by_admin`. Then delete this patch; the `homeserver.yaml` denylist entry stays. If
