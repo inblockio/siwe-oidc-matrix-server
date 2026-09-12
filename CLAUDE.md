@@ -252,8 +252,11 @@ overlay + existing entrypoint (no entrypoint change; a
 **Canonical patch/feature list:** `patches/element-web/README.md` (what / why /
 retirement). There is ONE Dockerfile and it applies all six patches; the old
 `dev`-applies-six / `main`-applies-three split ended when `dev` was merged into
-`main` on 2026-09-01. POLICY patches include forced first-device 4S recovery and
-the browser EventIndex (hosted E2EE search). v1.12.26 is a pnpm + nx monorepo needing
+`main` on 2026-09-01. POLICY patches include forced first-device 4S recovery.
+The browser EventIndex (hosted E2EE search) is NOT policy: it is the one
+UPSTREAM-TRACKED entry (element-web PR #34718), it is gated by the labs flag
+`feature_web_event_index` (default off) since the patch was regenerated on
+2026-09-12, and it retires when that PR merges. v1.12.26 is a pnpm + nx monorepo needing
 Node >=22.18; the builder uses `node:24-bullseye`. To bump Element, update
 `ELEMENT_WEB_TAG` and refresh every listed patch per
 `docs/element-web-source-build.md`. No separate fork is vendored (the source is

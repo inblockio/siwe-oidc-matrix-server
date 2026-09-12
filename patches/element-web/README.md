@@ -107,9 +107,14 @@ and the config prod actually serves.
 | 3 | `honest-qr-disabled-reason` | When "Show QR code" is blocked by **this session's own** crypto state, stop reporting it as the account provider not supporting device link. The stock string is simply false for us and hides the actual remedy. | yes, ungated |
 | 4 | `offer-verify-current-session` | `DeviceVerificationStatusCard` gave an unverified **current** session a card with no action and no reason, leaving the destructive identity reset as the only visible exit. | yes, ungated |
 | 5 | `auto-approve-check-code` | MSC4108 QR device-link check-code auto-approves once both digits are typed. The deliberate read-and-type is the security property; the extra confirm click is not. | yes, ungated |
-| 6 | `browser-eventindex` | A `BrowserEventIndexManager` implementing `BaseEventIndexManager` so E2EE room search works in hosted Element Web. Upstream PR #34718. | **yes, via explicit flag** |
+| 6 | `browser-eventindex` | A `BrowserEventIndexManager` implementing `BaseEventIndexManager` so E2EE room search works in hosted Element Web. Upstream PR #34718. | **yes, via explicit flag** — but the flag's NAME changed in the regenerated patch; see below |
 
-Entry 6 is the only gated one, and the gate is easy to read backwards:
+Entry 6 is the only gated one, and **its gate changed on 2026-09-12 when the
+patch was regenerated against PR #34718**. Read the two columns separately or
+you will draw the wrong conclusion from either.
+
+**What the image on prod does today** (built from the 2026-08 patch, still the
+served artifact):
 
 ```
 flag === false  -> off
@@ -122,12 +127,24 @@ search is **on in production by explicit opt-in**. dev-staging leaves the flag
 unset and gets it from the `STAGING_HOSTS` fallback. Both are on, by different
 mechanisms. Any comment claiming this patch is "dev-staging only" or "gated off
 on the production hostname" describes only the unset-flag fallback and is wrong
-about prod as configured.
+about prod as configured. To turn it off on that image, set the flag to `false`
+in prod's bind-mounted `config/element-config.json`; removing the key is NOT
+equivalent, because it falls through to the hostname check.
 
-To turn it off in production, set the flag to `false` in prod's bind-mounted
-`config/element-config.json`. Removing the key is NOT equivalent: it falls
-through to the hostname check, which also yields off, but only by accident of
-prod's hostname not being in `STAGING_HOSTS`.
+**What the vendored patch in this directory now does** (ships on the next
+element image build):
+
+```
+feature_web_event_index === true   -> ON (config.json `features`, or per-device in Labs)
+feature_web_event_index === false  -> off
+feature_web_event_index unset      -> OFF. There is no hostname fallback any more.
+```
+
+`feature_inblock_encrypted_search` is dead in the new patch and
+`config/element-config.json` still sets it, so **the next build turns encrypted
+search off everywhere until that key is renamed** to `feature_web_event_index`,
+in this repo and in prod's bind-mounted config. See entry 6, "DEPLOYMENT ACTION
+OUTSTANDING".
 
 ## Which Dockerfile applies what
 
@@ -280,51 +297,104 @@ A tag bump must try every patch in this file's order.
 
 ### 6. `browser-eventindex.patch` — UPSTREAM-TRACKED (PR #34718 open; carry until merged)
 
-- **Applied by:** `dockerfiles/Dockerfile.element` (the only one).
+- **Applied by:** `dockerfiles/Dockerfile.element` (the only one), SIXTH.
 - **What:** a `BrowserEventIndexManager` implementing Element's
   `BaseEventIndexManager` so `WebPlatform.getEventIndexingManager()` is
   non-null and `supportsEventIndexing()` is true. The stock Search UX and
-  Security → Message search pane light up. Index is an in-page inverted
-  index (AND of tokens, prefix on every token ≥ 2 chars, accent fold,
-  mid-word substring fallback for queries ≥ 3 chars); at rest it is AES-GCM
-  in a dedicated IndexedDB (`inblock-ew-eventindex`). Indexed text is
-  message body + filename + caption, not media bytes. Empty results while
-  the crawler is still running show `room|search|still_indexing` in the
-  stock aux panel. The DEK is a non-extractable `CryptoKey` derived via
-  HKDF from the session pickle key (destroyed on logout). On by hostname
-  for `dev.element.inblock.io` / `localhost` / `127.0.0.1`. On prod via
-  bind-mounted `features.feature_inblock_encrypted_search: true` (set
-  `false` to force off without a rebuild).
+  Security → Message search pane light up. The query engine is an in-page
+  inverted index (AND of tokens, prefix on every token ≥ 2 chars, accent
+  fold, mid-word substring fallback for queries ≥ 3 chars); indexed text is
+  message body + filename + caption, never media bytes. At rest it is
+  AES-GCM records in a dedicated IndexedDB, **`element-eventindex`**, schema
+  **v2**. The DEK is a non-extractable `CryptoKey` derived with HKDF-SHA256
+  from the session pickle key and bound to user + device (destroyed on
+  logout); every record is AAD-bound to its own primary key, so a record
+  cannot be re-filed under another user or event id and still decrypt; and
+  **checkpoint records are named by an HMAC** under a separate HKDF subkey,
+  so no room id, token or crawl direction is on disk in the clear. The
+  v1 → v2 migration **resets** the index rather than converting it — v1
+  named checkpoints by a cleartext tuple and the HMAC key cannot be computed
+  for records written before it existed. ~1,000 lines of documentation ride
+  along, including a threat model in the manager's header that says exactly
+  what is still cleartext (event ids, hence *which rooms are indexed*), what
+  the checkpoint HMAC does and does not buy (equality and count still leak),
+  and that none of it defends against XSS in this origin.
+- **The gate is now an upstream-shaped labs flag, `feature_web_event_index`,
+  default OFF.** This REPLACES the old `feature_inblock_encrypted_search`
+  key and the `STAGING_HOSTS` hostname fallback; neither name exists in the
+  patch any more. Its levels are `CONFIG, DEVICE` (config prioritised), so
+  `features.feature_web_event_index: true` in `config.json` turns it on for
+  a whole deployment and a user can turn it on for one device under Labs.
+  The gate is enforced **inside the manager**, on every path that writes,
+  because `EventIndexPeg` reads `supportsEventIndexing()` once and caches
+  it: a manager handed back after the flag went off would otherwise keep
+  indexing and keep a database alive. `WebPlatform` deliberately keeps
+  returning an already-constructed manager whatever the setting now says,
+  because `Lifecycle.clearStorage()` wipes localStorage *before* it asks the
+  manager to delete the index; and on a session where the flag is off and no
+  manager was ever constructed it deletes a database left behind by a
+  previous one, at most once. A manager is only ever *constructed* while the
+  flag is on, so an untouched Element Web never opens the database at all.
+- **It no longer patches `RoomSearchAuxPanel.tsx`.** Earlier versions
+  rendered their own "still indexing" banner there and shipped a
+  `room|search|still_indexing` string. Upstream now renders an equivalent
+  warning from `SearchWarning.tsx` via `useIsIndexIncomplete`, and that
+  function **is present at v1.12.26**
+  (`apps/web/src/components/views/elements/SearchWarning.tsx:67`; it renders
+  `seshat|warning_kind_search_partial` for `WarningKind.Search` as a polite
+  live region) — re-verified against a pristine tag tree on 2026-09-12, and
+  `RoomSearchAuxPanel.tsx` at the tag is byte-identical to the PR branch's
+  copy. So the deletion is correct against what we build, not only against
+  `develop`; without that check the deployed build would have lost the
+  warning entirely. **Consequence for the artifact-grep table at the bottom
+  of this file:** the marker is now `element-eventindex`, the old
+  `inblock-ew-eventindex` and `still_indexing` markers will find nothing,
+  and the code is still emitted into `bundles/<hash>/init.js`, not
+  `bundle.js`.
 - **Why we maintain it:** every inblock room is E2EE; upstream Web has no
   EventIndex, so Search is N/A. Product client is hosted Element Web, not
   Desktop. A Seshat WASM port was evaluated and rejected (SQLCipher /
   Tantivy 0.12 / native threads / Neon).
 - **Evidence:** `docs/2026-08-14-HANDOVER-encrypted-search-browser-eventindex.md`;
   audit `docs/audits/2026-08-14-encrypted-search-eventindex-audit.md`
-  (staging UX1–UX8 + prod promotion 2026-08-15).
-- **1.12.26 forward-port (2026-08-30):** the only patch of the six that did not
-  apply at v1.12.26, and purely from context drift — NOT because upstream shipped
-  an EventIndex (rule 4 checked: upstream still has no browser EventIndex, so the
-  retirement condition is unmet). Upstream reformatted `<SearchWarning>` in
-  `RoomSearchAuxPanel.tsx` onto multiple lines with new `scope`/`roomId` props, and
-  added an `oxlint-disable-next-line` comment above `WebPlatform.VERSION`.
-  Regenerated against a v1.12.26 tree with patches 1–5 already applied (so the
-  `en_EN.json` context stays correct for last-in-order application). The
-  regenerated patch has byte-identical added/removed lines and an identical
-  numstat (6 / 2-1 / 383 / 938 / 9) to the previous version — a pure context
-  refresh with zero behavior change.
+  (staging UX1–UX8 + prod promotion 2026-08-15). Both predate the labs-flag
+  and schema-v2 rework and describe the hostname gate and the
+  `inblock-ew-eventindex` database; read them as the record of why the
+  feature exists, not of how it is gated today.
+- **Regenerated against the PR, 2026-09-12.** The PR had moved substantially
+  (labs gate, schema v2, checkpoint HMAC, teardown hardening, rewritten
+  tests, docs) while the vendored copy still carried the 2026-08 form, which
+  is exactly the drift rule 3 forbids. Rebuilt from the PR's true current
+  state — the feature commit plus its uncommitted working tree, diffed
+  against the `develop` commit the branch last merged, which is the
+  merge-base with upstream `develop` — then re-expressed against a v1.12.26
+  tree with patches 1–5 already applied, so the `en_EN.json` context stays
+  correct for sixth-in-order application. The added/removed lines are
+  **byte-identical** to the PR's own net diff; only context and hunk offsets
+  differ. Ten files now instead of five, `+4142/-1`, patch 4265 lines
+  (was 1412). The one real base difference is `apps/web/src/settings/Settings.tsx`:
+  `develop` has dropped `feature_custom_themes` and `LabGroup.Themes`, which
+  v1.12.26 still has, three lines from our insertion point. Resolved by a
+  3-way apply against the PR's own pre-image blob, not by hand-editing hunk
+  headers; `en_EN.json` and `docs/labs.md` differ only by offset, and
+  `WebPlatform.ts`, `WebPlatform.test.ts`, `playwright/global.d.ts` and
+  `AUTHORS.rst` are identical at the tag and on `develop`.
 - **Upstream status: FILED AND ACTIVELY TRACKED — we are trying to get this
   merged.** [element-hq/element-web#34718](https://github.com/element-hq/element-web/pull/34718)
   "Add a browser EventIndex so encrypted-room search works on the web"
   (`inblockio:feat/web-event-index` → `element-hq:develop`, author
-  FantasticoFox, opened 2026-08-15, 10 files, +1734/-1). Fixes
+  FantasticoFox, opened 2026-08-15). Fixes
   [element-meta#3294](https://github.com/element-hq/element-meta/issues/3294).
-  Labelled `T-Enhancement` + `Z-Community-PR`.
+  Labelled `T-Enhancement` + `Z-Community-PR`. The shape of the current
+  revision is a direct answer to reviewer-facing objections: an ordinary
+  labs flag instead of a deployment-specific config key and a hostname
+  allowlist, an upstream-neutral database name, and the gate enforced where
+  it cannot be bypassed.
 
-  This is the **one patch in this registry with a live upstream merge path**, so
-  unlike the other POLICY entries it is an interim carrier, not a permanent
-  resident. Keep the vendored patch and the PR in sync: a change to one that is
-  not mirrored in the other splits our deployment from what upstream is
+  This is the **one patch in this registry with a live upstream merge path**,
+  so unlike the POLICY entries it is an interim carrier, not a permanent
+  resident. Keep the vendored patch and the PR in sync: a change to one that
+  is not mirrored in the other splits our deployment from what upstream is
   reviewing.
 
   Still NOT a Seshat port — the interface is upstream's, the store is ours. Do
@@ -334,7 +404,7 @@ A tag bump must try every patch in this file's order.
   **Status as of 2026-08-31:** mergeable, CI green (6/6 check-runs + CLA), but
   **zero reviews submitted**. GitHub reports `mergeable_state: unstable`, which
   for a community PR usually means workflows awaiting maintainer approval to
-  run. Last activity: Tim rebased and force-pushed CI fixes 2026-08-30 21:18Z.
+  run.
 
   **Open reviewer-side question worth chasing:** on 2026-08-28 the maintainer
   (t3chguy) reported "I don't see any messages whatsoever" with a screenshot
@@ -345,15 +415,54 @@ A tag bump must try every patch in this file's order.
   they cannot evaluate a *search* feature — so unblocking the federation issue
   may be on the critical path to this merge. Unproven link; check it before
   assuming.
+- **DEPLOYMENT ACTION OUTSTANDING — the gate key changed and the config did
+  not.** `config/element-config.json` still sets
+  `features.feature_inblock_encrypted_search: true`, which this patch no
+  longer reads, and the flag now defaults to **off**. The next element image
+  built from this tree therefore ships encrypted search **disabled
+  everywhere**, prod included, until that key is renamed to
+  `feature_web_event_index` in the repo config and in prod's bind-mounted
+  `config/element-config.json`. That rename is a deployment decision and is
+  deliberately NOT bundled into the patch regeneration; make it explicitly,
+  with the image promotion. To turn the feature off, set that key to `false`
+  or remove it — with the hostname fallback gone, removing it now means off
+  by design rather than off by accident.
+- **Order:** applied SIXTH. Its `en_EN.json` hunk was generated against the
+  tree with entries 1–5 applied; entry 7's `en_EN.json` hunk absorbs the two
+  lines this one now adds in the `labs` section (it lands at offset +1,
+  cleanly). Verified 2026-09-12 by applying all eight in Dockerfile order to
+  a pristine v1.12.26 tree.
 - **Retirement:** when #34718 (or an upstream equivalent) merges and ships in a
   tag we deploy, PROVIDED it still meets I1–I8 (ciphertext at rest,
   session-bound key, logout wipe) — verify those against the merged form, since
   review may change the store. Also retires if product stops requiring
   hosted-Web search.
-- **Coverage:** Element-tree vitest in the patch
-  (`BrowserEventIndexManager.test.ts`); repo
-  `scripts/browser-eventindex-invariants.mjs`;
-  `~/siwx-oidc/e2e/element/ew-encrypted-search.spec.mjs`. Default
+- **Coverage:** the patch now carries its own Playwright leg,
+  `apps/web/playwright/e2e/crypto/web-event-index.spec.ts` (3 tests under
+  `labsFlags: ["feature_web_event_index"]`, driving the **real** room-info
+  search box rather than calling the manager: a message sent through the
+  composer into an encrypted room is found with one line of context either
+  side and nothing further out; a term that was never sent reports "No
+  results", asserted only after the index is proven live so the test cannot
+  pass against an index that never started; and an indexed message is still
+  found after a full page reload, i.e. rebuilt from the encrypted records).
+  Element-tree vitest `BrowserEventIndexManager.test.ts` — 75 cases across 8
+  suites including the labs gate and **two 5,000-event scale suites**
+  (`SCALE_EVENT_COUNT = 5000` over four rooms, in-memory and persisted) —
+  plus 8 new `WebPlatform.test.ts` cases pinning `getEventIndexingManager()`
+  (never constructs while off, same instance once on, keeps handing one back
+  after the flag is gone so logout can delete, one-shot cleanup of an
+  orphaned database). Repo `scripts/browser-eventindex-invariants.mjs`
+  re-states the crypto and search algorithms independently of the Element
+  tree; it was written against the old HKDF info string and is updated here,
+  but it does NOT yet cover the checkpoint HMAC or the v1 → v2 reset — a
+  known gap, and the reason it is a supplement to the vitest rather than the
+  proof. The siwx-oidc leg rule 2 asks for,
+  `e2e/element/ew-encrypted-search.spec.mjs`, exists only on the unmerged
+  branch `feat/ew-encrypted-search-eventindex` and is NOT on that repo's
+  checked-out tree; the in-patch Playwright spec now covers the same user
+  journey against upstream's own harness, so the honest statement is that
+  the behaviour is covered and the siwx-oidc leg is still unlanded. Default
   `enableEventIndexing` stays upstream's `true` (same as Desktop).
 
 ---
@@ -553,6 +662,14 @@ distinctive string in the running `matrix-staging-element-web-1` webroot:
 | 4 | `offer-verify-current-session` | `verify_blocked_current_session_unverified` | 3 |
 | 5 | `auto-approve-check-code` | `open_approval_page` | 5 |
 | 6 | `browser-eventindex` | `inblock-ew-eventindex` | 2 |
+
+**Row 6's marker is stale for anything built after 2026-09-12.** The regenerated
+patch renames the database, so the marker to grep is now `element-eventindex`
+(and `feature_web_event_index` for the gate). `inblock-ew-eventindex`,
+`feature_inblock_encrypted_search` and `still_indexing` will find nothing in a
+build made from the current patch, and finding them instead proves the image is
+an OLD one. The row above is left as the record of what was checked on the
+artifact that is still serving prod.
 
 **Trap for whoever repeats this:** the EventIndex code is emitted into
 `bundles/<hash>/init.js`, **not** `bundle.js`. Grepping only `bundle.js` returns zero

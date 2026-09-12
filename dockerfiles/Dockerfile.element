@@ -37,9 +37,9 @@ RUN git clone --depth 1 --branch "${ELEMENT_WEB_TAG}" \
 #  - offer-verify-current-session: UPSTREAM dead end. An unverified session was
 #    shown a card that offered no action and no reason, leaving the DESTRUCTIVE
 #    identity reset as the only visible exit.
-#  - browser-eventindex:           OUR policy (staging). Implements the stock
-#    EventIndex hook so E2EE search works in hosted Element Web. Gated off on
-#    the production hostname.
+#  - browser-eventindex:           UPSTREAM-TRACKED (element-web PR #34718).
+#    Implements the stock EventIndex hook so E2EE search works in hosted
+#    Element Web, behind the labs flag feature_web_event_index (default OFF).
 #
 # Order matters only for en_EN.json, which five of them touch in different
 # places; applied in this order every hunk lands (verified against a pristine
@@ -62,12 +62,16 @@ COPY patches/element-web/auto-approve-check-code.patch /tmp/ew-checkcode.patch
 RUN git apply --verbose /tmp/ew-checkcode.patch
 
 # Encrypted-room search for hosted Element Web. Implements BaseEventIndexManager
-# so supportsEventIndexing() is true. NOT dev-staging-only: the hostname check
-# (STAGING_HOSTS) is only the fallback when features.feature_inblock_encrypted_search
-# is UNSET. An explicit `true` overrides it, and prod sets exactly that, so this
-# is LIVE on element.inblock.io (verified 2026-09-01 against the served
-# config.json). Independent of the other patches (new files + WebPlatform.ts).
-# See patches/element-web/README.md, "What runs on prod today".
+# so supportsEventIndexing() is true. Gated by the ordinary labs flag
+# feature_web_event_index, which DEFAULTS TO OFF: set
+# features.feature_web_event_index = true in config.json to turn it on for a
+# deployment, or a user turns it on for one device under Labs. The old
+# feature_inblock_encrypted_search key and the STAGING_HOSTS hostname fallback
+# are gone (regenerated against upstream PR #34718, 2026-09-12), so an image
+# built from this patch has search OFF until that config key is renamed.
+# Touches Settings.tsx, en_EN.json and docs/labs.md as well as the new files,
+# so it is no longer independent of the en_EN.json ordering above.
+# See patches/element-web/README.md, entry 6.
 COPY patches/element-web/browser-eventindex.patch /tmp/ew-eventindex.patch
 RUN git apply --verbose /tmp/ew-eventindex.patch
 
