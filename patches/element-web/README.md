@@ -140,11 +140,12 @@ feature_web_event_index === false  -> off
 feature_web_event_index unset      -> OFF. There is no hostname fallback any more.
 ```
 
-`feature_inblock_encrypted_search` is dead in the new patch and
-`config/element-config.json` still sets it, so **the next build turns encrypted
-search off everywhere until that key is renamed** to `feature_web_event_index`,
-in this repo and in prod's bind-mounted config. See entry 6, "DEPLOYMENT ACTION
-OUTSTANDING".
+`feature_inblock_encrypted_search` is dead in the new patch. The repo's
+`config/element-config.json` was renamed to `features.feature_web_event_index:
+true` on 2026-09-12, so an image built from this tree plus this config has
+search ON. **Prod's bind-mounted `config/element-config.json` still carries the
+old key** and must be renamed with the image promotion, or the new image ships
+with search off on prod. See entry 6, "DEPLOYMENT ACTION OUTSTANDING".
 
 ## Which Dockerfile applies what
 
@@ -415,18 +416,17 @@ A tag bump must try every patch in this file's order.
   they cannot evaluate a *search* feature — so unblocking the federation issue
   may be on the critical path to this merge. Unproven link; check it before
   assuming.
-- **DEPLOYMENT ACTION OUTSTANDING — the gate key changed and the config did
-  not.** `config/element-config.json` still sets
-  `features.feature_inblock_encrypted_search: true`, which this patch no
-  longer reads, and the flag now defaults to **off**. The next element image
-  built from this tree therefore ships encrypted search **disabled
-  everywhere**, prod included, until that key is renamed to
-  `feature_web_event_index` in the repo config and in prod's bind-mounted
-  `config/element-config.json`. That rename is a deployment decision and is
-  deliberately NOT bundled into the patch regeneration; make it explicitly,
-  with the image promotion. To turn the feature off, set that key to `false`
-  or remove it — with the hostname fallback gone, removing it now means off
-  by design rather than off by accident.
+- **DEPLOYMENT ACTION OUTSTANDING — prod's bind-mounted config still has the
+  old key.** The patch no longer reads
+  `features.feature_inblock_encrypted_search`, and the flag defaults to
+  **off**. The repo's `config/element-config.json` was renamed to
+  `features.feature_web_event_index: true` on 2026-09-12 (Tim's decision,
+  made when the two review-feedback commits were pushed to #34718). Prod's
+  bind-mounted `config/element-config.json` has NOT been touched: rename the
+  key there with the image promotion, or the next element image ships with
+  encrypted search **off on prod**. To turn the feature off, set that key to
+  `false` or remove it — with the hostname fallback gone, removing it now
+  means off by design rather than off by accident.
 - **Order:** applied SIXTH. Its `en_EN.json` hunk was generated against the
   tree with entries 1–5 applied; entry 7's `en_EN.json` hunk absorbs the two
   lines this one now adds in the `labs` section (it lands at offset +1,

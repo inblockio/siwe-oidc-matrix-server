@@ -67,8 +67,8 @@ RUN git apply --verbose /tmp/ew-checkcode.patch
 # features.feature_web_event_index = true in config.json to turn it on for a
 # deployment, or a user turns it on for one device under Labs. The old
 # feature_inblock_encrypted_search key and the STAGING_HOSTS hostname fallback
-# are gone (regenerated against upstream PR #34718, 2026-09-12), so an image
-# built from this patch has search OFF until that config key is renamed.
+# are gone (regenerated against upstream PR #34718, 2026-09-12). The repo
+# config carries the new key; prod's bind-mounted config must be renamed too.
 # Touches Settings.tsx, en_EN.json and docs/labs.md as well as the new files,
 # so it is no longer independent of the en_EN.json ordering above.
 # See patches/element-web/README.md, entry 6.
