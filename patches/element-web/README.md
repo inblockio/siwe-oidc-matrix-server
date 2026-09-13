@@ -20,6 +20,13 @@ Rules of this registry:
    - **UPSTREAM-TRACKED** — a feature we are actively trying to get merged upstream.
      Also an interim carrier. The vendored patch and the upstream PR must be kept in
      sync; drifting them splits our deployment from what reviewers are reading.
+     **One sanctioned exception exists today** (Tim, 2026-09-13): entry 6's vendored
+     patch deliberately LEADS PR #34718 by the non-blocking-load work, because prod
+     needed that before upstream was ready to receive it. A deliberate lead is only
+     allowed when it is (a) recorded in the entry, (b) pinned to a named provenance
+     commit on a branch of our fork, and (c) carries a stated condition for closing
+     the gap. Unrecorded drift is still forbidden — that is the whole point of the
+     rule.
    - **POLICY** — deployment policy that is not upstreamable. The only permanent
      residents.
    Today exactly one entry is UPSTREAM-TRACKED: #6 `browser-eventindex`
@@ -372,7 +379,7 @@ A tag bump must try every patch in this file's order.
   tree with patches 1–5 already applied, so the `en_EN.json` context stays
   correct for sixth-in-order application. The added/removed lines are
   **byte-identical** to the PR's own net diff; only context and hunk offsets
-  differ. Ten files now instead of five, `+4167/-1`, patch 4290 lines
+  differ. Ten files at that point (up from five), `+4167/-1`, patch 4290 lines
   (was 1412; the 2026-09-12 export was `+4142/-1` / 4265 lines, before the
   2026-09-13 resync below). The one real base difference is `apps/web/src/settings/Settings.tsx`:
   `develop` has dropped `feature_custom_themes` and `LabGroup.Themes`, which
@@ -401,6 +408,66 @@ A tag bump must try every patch in this file's order.
   `test.slow()` for the 30s `searchUntilFound` poll. Verified: all eight
   patches still apply in Dockerfile order to a pristine v1.12.26 tree, and
   `node --test scripts/browser-eventindex-invariants.mjs` is 12/12.
+- **NOW CARRIES THE NON-BLOCKING LOAD, AHEAD OF UPSTREAM (Tim's decision,
+  2026-09-13).** The vendored patch is no longer a mirror of the PR head. It is
+  regenerated from an integration branch on our fork that merges the PR head with
+  the non-blocking-load work, because prod could not ship with encrypted search
+  off and the blocking load was not acceptable on prod hardware. This is the
+  sanctioned exception named in rule 3 above; read that rule before "fixing" the
+  divergence.
+
+  - **Provenance commit: `27e660e434`** on
+    [`inblockio/element-web`](https://github.com/inblockio/element-web/tree/integration/web-event-index-prod-20260913),
+    branch **`integration/web-event-index-prod-20260913`** — a merge of
+    `feat/web-event-index` @ `500f348525` (the PR head plus its docs commit) and
+    `feat/web-event-index-nonblocking-load` @ `27e9537a8c`. The merge was clean
+    (docs vs src, no overlapping hunks). **That branch is NOT merged into
+    `feat/web-event-index`**: the PR's own line stays what upstream reviews, and
+    where the non-blocking work should land upstream is a separate open question.
+  - **What the non-blocking load changes.** `initEventIndex` no longer awaits a
+    full read of the persisted index before returning, so opening Element with a
+    large index no longer blocks app start — which was the binding constraint
+    recorded in the EventIndex bounded-memory ruling (memory
+    `event-index-bounded-memory-design`: ~0.18 ms/event of startup decryption,
+    not memory, is what hurts). Hydration now runs in the background behind a
+    `hydrating` flag, surfaced to callers as a new `IIndexStats.loading`;
+    `SearchWarning` polls it so the "results may be incomplete" notice appears
+    and, unlike the checkpoint signal, **clears itself** when hydration finishes;
+    reads are paged with a slice deadline and epoch-guarded teardown so a logout
+    mid-hydration cannot resurrect decrypted events into cleared maps. Six files
+    of the fifteen are new to the patch relative to the 2026-09-12 export:
+    `SearchWarning.tsx`, `SearchWarning-test.tsx`, `BaseEventIndexManager.ts`,
+    `docs/web-event-index.md`, `docs/.vitepress/config.ts`, and the enlarged
+    `en_EN.json` hunk. All three newly-touched upstream source/test files are
+    **byte-identical at `v1.12.26` and at the develop commit the PR branch last
+    merged**, so they apply at the tag with offset differences only.
+  - **Evidence it is safe to carry.** Adversarial review verdict **SHIP** at
+    `27e9537a8c`, all thirteen findings fixed and each fix re-verified as
+    load-bearing by isolated mutation:
+    `~/handovers/2026-09-12-element-web-eventindex/research/review-pr-a.md`;
+    proof numbers in the sibling `measurements-pr-a.md`. Re-run on the
+    integration branch itself before the patch was regenerated: **vitest
+    121/121** (`BrowserEventIndexManager.test.ts` + `WebPlatform.test.ts`),
+    **jest 37/37** across `SearchWarning-test.tsx`, `EventIndexPanel-test.tsx`
+    and `RoomSearchAuxPanel-test.tsx`, Playwright 3/3. Two residuals were
+    accepted as non-blocking: F9's fix has no test (mutant M16 survives), and
+    `useIsIndexIncomplete`'s last `await` sits outside its try/catch (latent
+    only — our `isRoomIndexed` is a pure Map read and cannot reject, but
+    Seshat's is a native call).
+  - **Patch size: fifteen files, `+6116/-32`, 6411 lines.** The added/removed
+    lines are byte-identical to `git diff 3028880631 27e660e434`, verified
+    per-file; only context and hunk offsets differ.
+  - **Bundle markers for this form** (the built code lands in
+    `bundles/<hash>/init.js`): present — `waitForHydration`, `hydrationFailure`,
+    `hydration failed`; **absent** — `stored ciphertext could not be decrypted`,
+    which the blocking form emitted and this one removes. That absent string is
+    the cheapest positive proof that a served bundle is the non-blocking build
+    and not the 2026-09-12 one.
+  - **Condition for closing the gap:** the non-blocking work lands on
+    `feat/web-event-index` (and so into #34718), or #34718 merges without it and
+    the work is re-filed as its own PR. Until one of those happens, every
+    regeneration of this patch must come from the integration branch, and the
+    tag-bump procedure in rule 4 must rebase that branch first, not the PR head.
 - **Upstream status: FILED AND ACTIVELY TRACKED — we are trying to get this
   merged.** [element-hq/element-web#34718](https://github.com/element-hq/element-web/pull/34718)
   "Add a browser EventIndex so encrypted-room search works on the web"

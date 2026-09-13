@@ -69,8 +69,19 @@ RUN git apply --verbose /tmp/ew-checkcode.patch
 # feature_inblock_encrypted_search key and the STAGING_HOSTS hostname fallback
 # are gone (regenerated against upstream PR #34718, 2026-09-12). The repo
 # config carries the new key; prod's bind-mounted config must be renamed too.
-# Touches Settings.tsx, en_EN.json and docs/labs.md as well as the new files,
-# so it is no longer independent of the en_EN.json ordering above.
+#
+# Since 2026-09-13 this patch also carries the NON-BLOCKING LOAD, which is AHEAD
+# of PR #34718 (Tim's decision): initEventIndex no longer awaits a full read of
+# the persisted index, so a large index cannot block app start. It is therefore
+# regenerated from the provenance commit 27e660e434 on
+# inblockio/element-web branch integration/web-event-index-prod-20260913, NOT
+# from the PR head. Do not "resync to the PR" without reading entry 6 -- that
+# would silently revert the non-blocking load on prod.
+#
+# Touches Settings.tsx, en_EN.json, docs/labs.md, SearchWarning.tsx,
+# BaseEventIndexManager.ts and their tests as well as the new files, so it is
+# neither independent of the en_EN.json ordering above nor confined to files
+# only this feature owns.
 # See patches/element-web/README.md, entry 6.
 COPY patches/element-web/browser-eventindex.patch /tmp/ew-eventindex.patch
 RUN git apply --verbose /tmp/ew-eventindex.patch
