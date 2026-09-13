@@ -4,9 +4,17 @@ Docker Compose deployment stack that runs a Synapse Matrix homeserver fronted by
 siwx-oidc (CAIP-122 OIDC provider) so agents and wallets can authenticate with
 EIP-191, Ed25519, or P-256 keys.
 
-> **Production state as of 2026-08-31** (this file predates it in places, see the
-> `v1.12.24` and MSC3861 sections below): prod runs **Synapse 1.159.0**, **Element
-> Web 1.12.26**, and **siwx-oidc `548b543`**. Synapse 1.157 removed
+> **Production state as of 2026-09-13**: prod runs **Synapse 1.159.0** (container
+> untouched since 2026-08-31), **Element Web 1.12.26** from
+> `element-web@sha256:785ab46c…` (`rev=f933e7b`), and **siwx-oidc `548b543`**.
+> That element image is the first to carry the browser EventIndex in its
+> **non-blocking labs-flag form** (`features.feature_web_event_index: true`, renamed
+> in prod's bind-mounted config the same day) and the first to carry patches 7 and 8
+> (`show-attested-did`, `resolve-did-search`). Promotion record, rollback digest and
+> the `--no-deps` rule that kept Synapse up:
+> `~/handovers/2026-09-12-element-web-eventindex/research/staging-dev-aquafire.md`
+> and `patches/element-web/README.md` entry 6. The older note below predates this in
+> places, see the `v1.12.24` and MSC3861 sections. Synapse 1.157 removed
 > `experimental_features.msc3861`; prod has been migrated to the stable
 > `matrix_authentication_service` block, written on every boot by
 > `entrypoints/matrix_server.sh:apply_mas_config()`. **Prod deploys by editing an

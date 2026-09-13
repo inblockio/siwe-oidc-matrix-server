@@ -99,13 +99,16 @@ re-litigated each time someone audits the registry.
 
 ## What runs on prod today
 
-**Entries 7 and 8 have NOT reached prod yet** (both added 2026-09-11; they ship when
-the element image is next promoted). For entries 1-6:
-
-**All six patches are built into the production image and all six are active on
-`element.inblock.io`.** Verified 2026-09-01 against the deployed artifact
-(`element-web@sha256:d7ba8b7b`, label `org.opencontainers.image.revision=60b037b`)
-and the config prod actually serves.
+**Updated 2026-09-13: all EIGHT patches are now live on `element.inblock.io`.**
+Entries 7 and 8 (added 2026-09-11) reached prod with this promotion, and entry 6
+is there in its **non-blocking labs-flag form**. Verified against the deployed
+artifact `element-web@sha256:785ab46c…`, label
+`org.opencontainers.image.revision=f933e7b`, and against the config prod
+actually serves (`https://element.inblock.io/config.json` →
+`features.feature_web_event_index: true`). Previous prod artifact, and the
+rollback target for this promotion: `element-web@sha256:d7ba8b7b…`, `rev=60b037b`.
+Synapse was deliberately **not** restarted (`up -d --no-deps element-web`); its
+container has been up since 2026-08-31.
 
 | # | Patch | Purpose | Active on prod |
 |---|---|---|---|
@@ -114,32 +117,10 @@ and the config prod actually serves.
 | 3 | `honest-qr-disabled-reason` | When "Show QR code" is blocked by **this session's own** crypto state, stop reporting it as the account provider not supporting device link. The stock string is simply false for us and hides the actual remedy. | yes, ungated |
 | 4 | `offer-verify-current-session` | `DeviceVerificationStatusCard` gave an unverified **current** session a card with no action and no reason, leaving the destructive identity reset as the only visible exit. | yes, ungated |
 | 5 | `auto-approve-check-code` | MSC4108 QR device-link check-code auto-approves once both digits are typed. The deliberate read-and-type is the security property; the extra confirm click is not. | yes, ungated |
-| 6 | `browser-eventindex` | A `BrowserEventIndexManager` implementing `BaseEventIndexManager` so E2EE room search works in hosted Element Web. Upstream PR #34718. | **yes, via explicit flag** — but the flag's NAME changed in the regenerated patch; see below |
+| 6 | `browser-eventindex` | A `BrowserEventIndexManager` implementing `BaseEventIndexManager` so E2EE room search works in hosted Element Web, with a **non-blocking** load so a large index cannot delay app start. Upstream PR #34718 plus the non-blocking work that leads it. | **yes, via `features.feature_web_event_index: true`** (renamed on prod 2026-09-13) |
 
-Entry 6 is the only gated one, and **its gate changed on 2026-09-12 when the
-patch was regenerated against PR #34718**. Read the two columns separately or
-you will draw the wrong conclusion from either.
-
-**What the image on prod does today** (built from the 2026-08 patch, still the
-served artifact):
-
-```
-flag === false  -> off
-flag === true   -> ON, and this OVERRIDES the hostname check
-flag unset      -> on only for STAGING_HOSTS (dev.element.inblock.io, localhost, 127.0.0.1)
-```
-
-Prod serves `features.feature_inblock_encrypted_search: true`, so encrypted
-search is **on in production by explicit opt-in**. dev-staging leaves the flag
-unset and gets it from the `STAGING_HOSTS` fallback. Both are on, by different
-mechanisms. Any comment claiming this patch is "dev-staging only" or "gated off
-on the production hostname" describes only the unset-flag fallback and is wrong
-about prod as configured. To turn it off on that image, set the flag to `false`
-in prod's bind-mounted `config/element-config.json`; removing the key is NOT
-equivalent, because it falls through to the hostname check.
-
-**What the vendored patch in this directory now does** (ships on the next
-element image build):
+Entry 6 is the only gated one. **Its gate is now the same everywhere**, which it
+was not before 2026-09-13:
 
 ```
 feature_web_event_index === true   -> ON (config.json `features`, or per-device in Labs)
@@ -147,12 +128,19 @@ feature_web_event_index === false  -> off
 feature_web_event_index unset      -> OFF. There is no hostname fallback any more.
 ```
 
-`feature_inblock_encrypted_search` is dead in the new patch. The repo's
-`config/element-config.json` was renamed to `features.feature_web_event_index:
-true` on 2026-09-12, so an image built from this tree plus this config has
-search ON. **Prod's bind-mounted `config/element-config.json` still carries the
-old key** and must be renamed with the image promotion, or the new image ships
-with search off on prod. See entry 6, "DEPLOYMENT ACTION OUTSTANDING".
+Both `element.inblock.io` and `dev.element.inblock.io` set the key to `true` in
+their bind-mounted `config/element-config.json`, so both are ON by the same
+explicit mechanism. `feature_inblock_encrypted_search` is dead: nothing reads it,
+and it has been removed from prod's config.
+
+**The history matters if you read older notes.** Until 2026-09-13 the two hosts
+were on by *different* mechanisms — prod by an explicit
+`feature_inblock_encrypted_search: true`, dev-staging by the patch's
+`STAGING_HOSTS` hostname fallback with no key set at all. Both the old key and
+the hostname allowlist are gone from the patch. So any comment claiming this
+feature is "dev-staging only", or "gated off on the production hostname",
+describes a gate that no longer exists and was already wrong about prod as
+configured.
 
 ## Which Dockerfile applies what
 
@@ -458,11 +446,26 @@ A tag bump must try every patch in this file's order.
     lines are byte-identical to `git diff 3028880631 27e660e434`, verified
     per-file; only context and hunk offsets differ.
   - **Bundle markers for this form** (the built code lands in
-    `bundles/<hash>/init.js`): present — `waitForHydration`, `hydrationFailure`,
-    `hydration failed`; **absent** — `stored ciphertext could not be decrypted`,
-    which the blocking form emitted and this one removes. That absent string is
-    the cheapest positive proof that a served bundle is the non-blocking build
-    and not the 2026-09-12 one.
+    `bundles/<hash>/init.js`, never `bundle.js`). Present only in the
+    non-blocking build, and all four verified absent from the 2026-09-12
+    blocking build's served bundle: **`waitForHydration`** (1),
+    **`hydrationFailure`** (4), **`hydration failed`** (1), and the reworded log
+    string **`a stored checkpoint could not be decrypted`** (1). Also present,
+    from the feature itself: `feature_web_event_index` (3),
+    `element-eventindex-v1`, `element-eventindex-cpmac`,
+    `supportsEventIndexing` (4). Absent, as retired:
+    `feature_inblock_encrypted_search`, `inblock-ew-eventindex`.
+
+    > **Do NOT use `stored ciphertext could not be decrypted` as a negative
+    > marker.** An earlier revision of this entry named it as "absent in the
+    > non-blocking build" because the diff shows that line being deleted. It is
+    > **moved, not deleted** — `initEventIndex` now logs the reworded *"a stored
+    > checkpoint…"* variant while the original wording reappears verbatim inside
+    > `hydrate()`'s failure path, so the string is present in **both** builds
+    > and discriminates nothing. Caught by the live grep during the 2026-09-13
+    > promotion, before it was trusted. `BrowserEventIndexManager` is also
+    > useless as a marker: the class name is minified away, and greps for it
+    > return 0 on a perfectly good bundle.
   - **Condition for closing the gap:** the non-blocking work lands on
     `feat/web-event-index` (and so into #34718), or #34718 merges without it and
     the work is re-filed as its own PR. Until one of those happens, every
@@ -504,17 +507,20 @@ A tag bump must try every patch in this file's order.
   they cannot evaluate a *search* feature — so unblocking the federation issue
   may be on the critical path to this merge. Unproven link; check it before
   assuming.
-- **DEPLOYMENT ACTION OUTSTANDING — prod's bind-mounted config still has the
-  old key.** The patch no longer reads
-  `features.feature_inblock_encrypted_search`, and the flag defaults to
-  **off**. The repo's `config/element-config.json` was renamed to
-  `features.feature_web_event_index: true` on 2026-09-12 (Tim's decision,
-  made when the two review-feedback commits were pushed to #34718). Prod's
-  bind-mounted `config/element-config.json` has NOT been touched: rename the
-  key there with the image promotion, or the next element image ships with
-  encrypted search **off on prod**. To turn the feature off, set that key to
-  `false` or remove it — with the hostname fallback gone, removing it now
-  means off by design rather than off by accident.
+- **DEPLOYMENT ACTION DISCHARGED, 2026-09-13.** This entry previously carried a
+  "DEPLOYMENT ACTION OUTSTANDING" warning: the patch had stopped reading
+  `features.feature_inblock_encrypted_search` while prod's bind-mounted config
+  still set only that key, so promoting the image without renaming the key would
+  have shipped encrypted search **off on prod**. Both halves have now landed
+  together. Prod's `/home/deploy/matrix/stack/config/element-config.json` was
+  rewritten **in place, inode 559991 preserved** (a single-file bind mount
+  follows the inode), a one-line diff renaming the key to
+  `feature_web_event_index: true`, and the element container was switched in the
+  same window. Verified on the served artifact, not just on disk:
+  `https://element.inblock.io/config.json` reports the new key and no old one.
+  To turn the feature off now, set that key to `false` or remove it — with the
+  hostname fallback gone, removing it means off by design rather than off by
+  accident.
 - **Order:** applied SIXTH. Its `en_EN.json` hunk was generated against the
   tree with entries 1–5 applied; entry 7's `en_EN.json` hunk absorbs the two
   lines this one now adds in the `labs` section (it lands at offset +1,
