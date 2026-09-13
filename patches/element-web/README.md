@@ -471,6 +471,71 @@ A tag bump must try every patch in this file's order.
     the work is re-filed as its own PR. Until one of those happens, every
     regeneration of this patch must come from the integration branch, and the
     tag-bump procedure in rule 4 must rebase that branch first, not the PR head.
+- **SECOND CARRY, 2026-09-13: the patch now carries increments A, B and C, all
+  ahead of upstream.** Same sanctioned-exception rule as the first carry (rule 3
+  above); this entry is the record it requires.
+
+  - **Provenance commit: `eee0f8a755`** on
+    [`inblockio/element-web`](https://github.com/inblockio/element-web/tree/integration/web-event-index-prod-20260913b),
+    branch **`integration/web-event-index-prod-20260913b`** — `feat/web-event-index`
+    @ `500f348525` merged with `feat/web-event-index-bounds` @ `af6fec256c`, which
+    is the top of the A -> B -> C stack and already contains A and B. Supersedes
+    the first carry's provenance `27e660e434`. Still **not** merged into
+    `feat/web-event-index`; the PR's own line stays what upstream reviews.
+  - **A** (carried since the first pass): non-blocking `initEventIndex`, so a
+    large index cannot block app start.
+  - **B:** batched writes, `getStats()` made O(1), a sorted vocabulary searched by
+    binary search instead of scanned, and a per-record folded-text memo.
+  - **C:** a crawl window and room cap behind a small `shouldCrawl` hook added to
+    the **shared** `apps/web/src/indexing/EventIndex.ts`; a hot-window byte budget
+    whose eviction **never deletes disk rows**; a disk budget; an encrypted
+    recency manifest in `meta` with a self-healing migration pass for databases
+    written before it existed; `navigator.storage.persist()`; and the "Search
+    covers messages newer than {date}" line.
+  - **Two things operators need to know**, because users will see both:
+    1. **Existing browser databases run a one-time background migration pass on
+       first load** — about **10 s at 200k events**, and deliberately **off the
+       start path**, so the app opens normally while it runs. It is self-healing:
+       a database that predates the recency manifest gets one built rather than
+       being wiped.
+    2. **Events outside the hot window are not searchable** until the cold-scan
+       increment lands. This is a real, deliberate reduction in what search
+       reaches, not a bug: the bound is what keeps memory and disk finite. The UI
+       is honest about it — the search warning states the coverage date
+       (`seshat|warning_kind_search_windowed`, "Search covers messages newer than
+       %(date)s"), and `docs/labs.md` states the window (90 days) and the room cap
+       (100 desktop / 20 on memory-constrained devices).
+  - **Evidence:** reviews **SHIP** after several rounds —
+    `~/handovers/2026-09-12-element-web-eventindex/research/review-pr-b.md` and
+    `review-pr-c.md` (C took five passes; final SHIP at `af6fec256c`), proofs in
+    `measurements-pr-b.md` and `measurements-pr-c.md`. Gates re-run on the
+    integration branch itself: **vitest 183/183** (`BrowserEventIndexManager`,
+    `WebPlatform`, `eventIndexBounds`, `EventIndex`), **jest 44/44**
+    (`SearchWarning`, `EventIndexPanel`, `RoomSearchAuxPanel`), `tsc --noEmit`
+    **0 errors in project sources** (3 pre-existing inside
+    `node_modules/matrix-js-sdk`), `oxlint` clean, `oxfmt --check` clean,
+    `lint:knip` clean, and `pnpm run i18n` regenerating to **zero git diff**.
+  - **Patch size: nineteen files, `+10476/-37`, 10892 lines** (was fifteen,
+    `+6116/-32`). Added/removed lines byte-identical per file to
+    `git diff 3028880631 eee0f8a755`.
+  - **One merge conflict, in `docs/labs.md`**, resolved by keeping **both** sides:
+    the docs commit's recency-window and CJK paragraph, then C's concrete numbers,
+    then the link to `web-event-index.md`. General-to-specific, re-read as a whole
+    so the section does not say the same thing twice.
+  - **New base-drift risk, checked and clear.** C is the first increment to touch
+    the shared `apps/web/src/indexing/EventIndex.ts`, and that file is **not**
+    byte-identical at `v1.12.26` and at the develop commit the PR branch last
+    merged: develop added two `await`s in front of `addRoomCheckpoint`
+    (`:262`, `:296`) after the tag. The 3-way apply resolved against the PR's own
+    pre-image, and the result was checked line by line: the applied tree still has
+    v1.12.26's **unawaited** calls and the only delta is our `shouldCrawl` work
+    (+47/-3). Upstream's fix did **not** leak in. Re-check this at every tag bump:
+    a patch that silently imports unrelated develop changes is the failure mode
+    here, and it is invisible unless you look.
+  - **Bundle markers for this form**, on top of the A markers below:
+    **`shouldCrawl`**, **`runManifestMigration`**, **`manifestCeilingBytes`**, and
+    the i18n key **`warning_kind_search_windowed`**. All four are absent from the
+    first-carry build (`@sha256:785ab46c…`), so they are what tells the two apart.
 - **Upstream status: FILED AND ACTIVELY TRACKED — we are trying to get this
   merged.** [element-hq/element-web#34718](https://github.com/element-hq/element-web/pull/34718)
   "Add a browser EventIndex so encrypted-room search works on the web"
