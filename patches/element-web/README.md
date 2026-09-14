@@ -615,20 +615,41 @@ A tag bump must try every patch in this file's order.
     `git apply --3way`; all eight patches apply in Dockerfile order to a pristine
     `v1.12.26` tree; `node --test scripts/browser-eventindex-invariants.mjs` is
     **12/12**.
-  - **Bundle markers for this form.** Chosen the way rule-6 markers have to be
-    chosen here — from what actually survives minification (property names, store
-    names and string literals; **class, interface and module-const names do not**,
-    which is why `ColdScanSession`, `COLD_SCAN_BUDGET_MS` and `migrateToV3` are
-    useless as markers even though they are all over the source, exactly like
-    `BrowserEventIndexManager` before them). Present only in this build and
-    **absent from the second-carry build** (`@sha256:162f82bf…`): **`chunkId`**
-    and the **`"chunks"`** store name (D-core), **`coldTouched`**,
-    **`searchPartial` / `isSearchPartial`** (E), and **`maxTouchPoints`** (the
-    tier fix). Still present from C: **`shouldCrawl`**, **`manifestCeilingBytes`**.
-    **`runManifestMigration` is now 0** and that is correct, not a regression: the
-    v3 reset replaced the manifest-migration pass it named, so it is a negative
-    marker for D-core. Retired markers, still 0: `feature_inblock_encrypted_search`,
-    `inblock-ew-eventindex`, `still_indexing`.
+  - **Bundle markers for this form, counted on the served
+    `bundles/<hash>/init.js` with the second-carry build (`@sha256:162f82bf…`,
+    `bundles/616d93df8ad1b8214909/init.js`) as the control** — not predicted from
+    the source, because what survives minification is not obvious and this file
+    has been wrong about a marker before:
+
+    | marker | this build | second-carry control | what it proves |
+    |---|---|---|---|
+    | `chunkId` | 27 | **0** | D-core chunk store |
+    | `"chunks"` | 17 | **0** | D-core object store name |
+    | `ColdScanSession` | 3 | **0** | E scan session |
+    | `searchPartial` | 8 | **0** | E partial-result signal |
+    | `coldTouched` | 3 | **0** | E cold tier touched |
+    | `isSearchPartial` | 1 | **0** | E signal reaching the UI |
+    | `maxTouchPoints` | 2 | **0** | E item 0, the Firefox/Safari tier fix |
+    | `shouldCrawl` | 2 | 2 | C, still carried |
+    | `manifestCeilingBytes` | 2 | 2 | C, still carried |
+    | `waitForHydration` / `hydrationFailure` | 1 / 4 | 1 / 4 | A, still carried |
+    | `feature_web_event_index` / `element-eventindex` | 3 / 3 | 3 / 3 | the gate and the database |
+    | `runManifestMigration` | **0** | 2 | see below |
+    | `COLD_SCAN_BUDGET_MS`, `migrateToV3` | 0 | 0 | useless as markers |
+    | `feature_inblock_encrypted_search`, `inblock-ew-eventindex`, `still_indexing` | 0 | 0 | retired |
+
+    Two things in that table are worth remembering rather than re-deriving.
+    **`runManifestMigration` going from 2 to 0 is correct, not a regression:** the
+    v3 reset replaced the manifest-migration pass it named, so its absence is a
+    *positive* discriminator for D-core. And **`COLD_SCAN_BUDGET_MS` and
+    `migrateToV3` read 0 in a perfectly good build** — a module-level const and a
+    module-level function both get mangled, exactly like `BrowserEventIndexManager`
+    before them. Do not grep for them and conclude the increment is missing.
+    The interface name `ColdScanSession` nevertheless reads 3, because it survives
+    inside *method and field* names the minifier leaves alone —
+    `coldScanSessions` (the session `Map`) and `pageColdScanSession` — not as the
+    type itself, which TypeScript erased. Property names, method names, store
+    names and string literals are the reliable class of marker here.
 - **Upstream status: FILED AND ACTIVELY TRACKED — we are trying to get this
   merged.** [element-hq/element-web#34718](https://github.com/element-hq/element-web/pull/34718)
   "Add a browser EventIndex so encrypted-room search works on the web"
