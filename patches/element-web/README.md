@@ -117,7 +117,7 @@ container has been up since 2026-08-31.
 | 3 | `honest-qr-disabled-reason` | When "Show QR code" is blocked by **this session's own** crypto state, stop reporting it as the account provider not supporting device link. The stock string is simply false for us and hides the actual remedy. | yes, ungated |
 | 4 | `offer-verify-current-session` | `DeviceVerificationStatusCard` gave an unverified **current** session a card with no action and no reason, leaving the destructive identity reset as the only visible exit. | yes, ungated |
 | 5 | `auto-approve-check-code` | MSC4108 QR device-link check-code auto-approves once both digits are typed. The deliberate read-and-type is the security property; the extra confirm click is not. | yes, ungated |
-| 6 | `browser-eventindex` | A `BrowserEventIndexManager` implementing `BaseEventIndexManager` so E2EE room search works in hosted Element Web, with a **non-blocking** load so a large index cannot delay app start. Upstream PR #34718 plus the non-blocking work that leads it. | **yes, via `features.feature_web_event_index: true`** (renamed on prod 2026-09-13) |
+| 6 | `browser-eventindex` | A `BrowserEventIndexManager` implementing `BaseEventIndexManager` so E2EE room search works in hosted Element Web, with a **non-blocking** load so a large index cannot delay app start, bounded crawl/memory/disk budgets, a chunked encrypted store, and a streamed cold scan for what is on disk outside the resident window. Upstream PR #34718 plus increments A, B, C, D-core and E, which lead it. | **yes, via `features.feature_web_event_index: true`** (renamed on prod 2026-09-13) |
 
 Entry 6 is the only gated one. **Its gate is now the same everywhere**, which it
 was not before 2026-09-13:
@@ -536,6 +536,99 @@ A tag bump must try every patch in this file's order.
     **`shouldCrawl`**, **`runManifestMigration`**, **`manifestCeilingBytes`**, and
     the i18n key **`warning_kind_search_windowed`**. All four are absent from the
     first-carry build (`@sha256:785ab46c…`), so they are what tells the two apart.
+- **THIRD CARRY, 2026-09-14: the patch now carries increments A, B, C, D-core and
+  E, all ahead of upstream.** Same sanctioned-exception rule as the first two
+  carries (rule 3 above); this entry is the record it requires.
+
+  - **Provenance commit: `7280a73f90`** on
+    [`inblockio/element-web`](https://github.com/inblockio/element-web/tree/integration/web-event-index-prod-20260914),
+    branch **`integration/web-event-index-prod-20260914`** — `feat/web-event-index`
+    @ `5ae9fdf3dd` (the PR head: review fixes plus the refreshed design doc) merged
+    with `feat/web-event-index-cold-tier-core` @ `c61dba1135`, which is the top of
+    the A -> B -> C -> D-core -> E stack. Supersedes the second carry's provenance
+    `eee0f8a755`. Still **not** merged into `feat/web-event-index`; the PR's own
+    line stays what upstream reviews.
+  - **D-core:** IndexedDB schema **v3** — events are stored as binary AES-GCM
+    **chunks** rather than one record per event, so event ids are no longer in the
+    clear on disk, hydration reads each chunk once, and the budget heap orders by
+    chunk `maxTs`. The online v2 -> v3 conversion was deliberately **dropped**
+    (it stays on `feat/web-event-index-chunks` for reference).
+  - **E:** a **cold tier** — content that is on disk but outside the resident
+    (hot) window is found by a streamed **newest-first scan**, walked one chunk at
+    a time inside a scan **session** held behind an opaque `next_batch` token
+    (bounded at four live sessions; an unknown token yields an empty page), with a
+    **1 s budget per page** (`COLD_SCAN_BUDGET_MS`) so a miss can never hang the
+    UI; the scan is cancelled when a new query arrives. The coverage date in the
+    search warning is sourced from the **oldest indexed** event rather than the
+    oldest resident one. Item 0 of E is the tier fix: `navigator.deviceMemory` is
+    Chromium-only, so **Firefox and Safari desktop users used to fall to the small
+    tier**; absent `deviceMemory` on a non-mobile UA (decided with
+    `navigator.maxTouchPoints`, which also keeps iPadOS on the constrained tier)
+    now means **desktop**.
+  - **What operators and users will see, and it is the thing to announce:**
+    1. **Every existing browser database is RESET once on first load.** Schema v2
+       is not converted to v3 — it is dropped and re-crawled, bounded by C's crawl
+       window and room cap, exactly as the first enablement was (Tim's original
+       ruling; the window is what makes it affordable). Nothing is lost, the
+       homeserver is the source of truth. **Visibly:** search coverage restarts
+       from the crawl window, and the coverage date in the search warning
+       ("Search covers messages newer than …") **moves forward** at the reset and
+       then **back** again as the crawler refills the window.
+    2. **Older messages beyond the hot window are searchable again.** Since the
+       second carry, content outside the resident window was on disk but not
+       reachable; E reaches it with the streamed newest-first scan described
+       above. A query that has to go to disk costs seconds, not milliseconds
+       (measured ~3.1 s over 200k events in 4 pages, ~7.7 s over 500k in 8), which
+       is why the per-page budget exists and why the warning says the result set
+       may be partial.
+    3. **Firefox and Safari on the desktop get the desktop tier** rather than the
+       49k-event small tier they were getting from the missing `deviceMemory`.
+  - **Evidence:** reviews **SHIP** —
+    `~/handovers/2026-09-12-element-web-eventindex/research/review-pr-d.md` (four
+    sections, D-core SHIP at `2c04b3b562`) and `review-pr-e.md` (four sections,
+    E-core SHIP at `c61dba1135`, both HIGH findings of the previous round verified
+    fixed in both directions), proofs in `measurements-pr-d.md` and
+    `measurements-pr-e.md`. Gates re-run **on the integration branch itself**:
+    **vitest 294/294** (`BrowserEventIndexManager`, `WebPlatform`,
+    `eventIndexBounds`, `ElectronPlatform`, `PWAPlatform`, `EventIndex`), **jest
+    48/48** across `SearchWarning`, `EventIndexPanel` and `RoomSearchAuxPanel`
+    (5 snapshots), `tsc --noEmit` **0 errors in project sources** (the 3
+    pre-existing ones are inside `node_modules/matrix-js-sdk`), `oxlint` clean,
+    `oxfmt --check` clean, `lint:knip` clean, `pnpm run i18n` regenerating to
+    **zero git diff**.
+  - **Patch size: nineteen files, `+14883/-39`, 15304 lines** (was nineteen,
+    `+10476/-37`). Added/removed lines byte-identical per file to
+    `git diff 3028880631 7280a73f90`, verified for all nineteen.
+  - **One merge conflict, in `docs/labs.md`** again, and for the same reason: the
+    docs refresh reworded the labs entry while C and E each added a sentence to
+    it. Resolved by keeping the refreshed wording, then C's window/room-cap
+    sentence extended with E's cold-scan sentence, then D-core's reset sentence,
+    then the link to `web-event-index.md`; the whole section was re-read
+    afterwards, and the refreshed "recency window" sentence was adjusted to say
+    the crawler stops at the window, because with E on board "old messages are out
+    of reach" is no longer true of everything on disk. `docs/web-event-index.md`
+    exists only on the PR side and came through untouched.
+  - **Base-drift re-check (the `indexing/EventIndex.ts` hazard from the second
+    carry) is clean again:** the applied tree still has v1.12.26's **unawaited**
+    `addRoomCheckpoint` calls at `:294` and `:328`, and the only delta is our
+    `shouldCrawl` work (`+47/-3`). All nineteen files applied cleanly with
+    `git apply --3way`; all eight patches apply in Dockerfile order to a pristine
+    `v1.12.26` tree; `node --test scripts/browser-eventindex-invariants.mjs` is
+    **12/12**.
+  - **Bundle markers for this form.** Chosen the way rule-6 markers have to be
+    chosen here — from what actually survives minification (property names, store
+    names and string literals; **class, interface and module-const names do not**,
+    which is why `ColdScanSession`, `COLD_SCAN_BUDGET_MS` and `migrateToV3` are
+    useless as markers even though they are all over the source, exactly like
+    `BrowserEventIndexManager` before them). Present only in this build and
+    **absent from the second-carry build** (`@sha256:162f82bf…`): **`chunkId`**
+    and the **`"chunks"`** store name (D-core), **`coldTouched`**,
+    **`searchPartial` / `isSearchPartial`** (E), and **`maxTouchPoints`** (the
+    tier fix). Still present from C: **`shouldCrawl`**, **`manifestCeilingBytes`**.
+    **`runManifestMigration` is now 0** and that is correct, not a regression: the
+    v3 reset replaced the manifest-migration pass it named, so it is a negative
+    marker for D-core. Retired markers, still 0: `feature_inblock_encrypted_search`,
+    `inblock-ew-eventindex`, `still_indexing`.
 - **Upstream status: FILED AND ACTIVELY TRACKED — we are trying to get this
   merged.** [element-hq/element-web#34718](https://github.com/element-hq/element-web/pull/34718)
   "Add a browser EventIndex so encrypted-room search works on the web"
